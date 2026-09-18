@@ -3,10 +3,13 @@
 SFTP transport: the SSH file transfer protocol over an SSH session; a Receive Location lists and reads, a Send Location writes. A technology of
 [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
-Declared and not yet written; `architecture.toml` carries the maturity. When
-it is written it implements `Transport`, one mechanism at one gate (ADR-0050).
-What it may depend on is `repository-model.md` section 4 and ADR-0044: its
-capability, and no sibling.
+One file is one Stream, carried over a real SSH handshake — Curve25519 key
+exchange, an Ed25519 host key, `aes256-ctr` with `hmac-sha2-256`, then password
+or public-key authentication and the `sftp` subsystem over one channel. The
+transport brings its own far end (ADR-0051): an in-process SSH server serves a
+directory held in memory, so one exchange runs both ways on this machine, and
+a public-key login is promoted onto the arrival as `ssh.key`, `ssh.user`,
+`ssh.signature` and `ssh.session` for the identity gate.
 
 ## Toolchain
 
