@@ -15,11 +15,33 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/IlleNilsson/xmip-core-transport-sftp"
-description = "SFTP transport: the SSH file transfer protocol over an SSH session; a Receive Location lists and reads, a Send Location writes."
+description = "SFTP transport: the SSH file transfer protocol over an SSH session; a Receive Location lists and reads, a Send Location writes. A xmip-core-transport technology."
 publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+# A Technology depends on its parent Capability, never the reverse
+# (repository-model.md). SFTP rides on SSH over TCP, so the tcp technology is
+# the carrier the manifest declares: the far end binds through it.
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilsson/xmip-core-transport-tcp", branch = "main" }
+# The cryptography the SSH transport is built from: one key-exchange curve,
+# one host-key algorithm, and one cipher suite (aes256-ctr with
+# hmac-sha2-256). The binary framing is the standard library's.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = "2"
+sha2 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+hmac = "0.12"
+getrandom = "0.2"
+
+[dev-dependencies]
+# The loopback payloads the tests drive, from the capability's test support
+# and never a production build (ADR-0044).
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
 
 [lints.rust]
 # forbid, not deny: a module has no business writing unsafe. The one exception
