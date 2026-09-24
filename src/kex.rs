@@ -13,9 +13,11 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
-use crate::packet::{Conn, Reader, Writer};
+use crate::packet::{Conn, Ssh, SshWrite};
 
 /// The message that opens the key exchange.
 pub const KEXINIT: u8 = 20;
@@ -52,7 +54,7 @@ fn kexinit() -> Result<Vec<u8>> {
     let mut cookie = [0u8; 16];
     getrandom::getrandom(&mut cookie)
         .map_err(|_| protocol_error("the system would not draw a key-exchange cookie"))?;
-    let mut writer = Writer::new();
+    let mut writer = Vec::new();
     writer.byte(KEXINIT);
     for byte in cookie {
         writer.byte(byte);
@@ -72,8 +74,8 @@ fn kexinit() -> Result<Vec<u8>> {
         writer.string(names.as_bytes());
     }
     writer.bool(false);
-    writer.u32(0);
-    Ok(writer.finish())
+    writer.u32_be(0);
+    Ok(writer)
 }
 
 /// A fresh ephemeral Curve25519 key pair: the secret and its public 32 bytes.
@@ -90,17 +92,15 @@ fn ephemeral() -> Result<(StaticSecret, [u8; 32])> {
 /// key-exchange payloads, the host key, the two ephemeral public keys, and
 /// the shared secret as an `mpint`.
 fn exchange_hash(parts: &HashParts<'_>) -> Vec<u8> {
-    let mut writer = Writer::new();
-    writer
-        .string(parts.v_c.as_bytes())
+    let mut data = Vec::new();
+    data.string(parts.v_c.as_bytes())
         .string(parts.v_s.as_bytes())
         .string(parts.i_c)
         .string(parts.i_s)
         .string(parts.k_s)
         .string(parts.q_c)
-        .string(parts.q_s);
-    let mut data = writer.finish();
-    data.extend_from_slice(parts.k_mpint);
+        .string(parts.q_s)
+        .bytes(parts.k_mpint);
     Sha256::digest(&data).to_vec()
 }
 
@@ -119,19 +119,19 @@ struct HashParts<'a> {
 /// The `mpint` encoding of a 32-byte shared secret, used both in the exchange
 /// hash and in the key derivation.
 fn shared_mpint(shared: &[u8]) -> Vec<u8> {
-    let mut writer = Writer::new();
+    let mut writer = Vec::new();
     writer.mpint(shared);
-    writer.finish()
+    writer
 }
 
 /// The `ssh-ed25519` host key blob: the algorithm name and the 32-byte public
 /// key, each a string.
 #[must_use]
 pub fn host_key_blob(verifying: &VerifyingKey) -> Vec<u8> {
-    let mut writer = Writer::new();
+    let mut writer = Vec::new();
     writer.string(HOST_KEY.as_bytes());
     writer.string(verifying.as_bytes());
-    writer.finish()
+    writer
 }
 
 /// Drive the client's half of the key exchange over `conn`.
@@ -145,12 +145,12 @@ pub fn client(conn: &mut Conn, v_c: &str, v_s: &str) -> Result<Exchanged> {
     let i_s = conn.expect(KEXINIT, "the server's key-exchange offer")?;
 
     let (secret, q_c) = ephemeral()?;
-    let mut init = Writer::new();
+    let mut init = Vec::new();
     init.byte(KEX_ECDH_INIT).string(&q_c);
-    conn.send(&init.finish())?;
+    conn.send(&init)?;
 
     let reply = conn.expect(KEX_ECDH_REPLY, "the server's key-exchange reply")?;
-    let mut reader = Reader::new(&reply[1..]);
+    let mut reader = Cursor::new(&reply[1..]);
     let k_s = reader.string()?.to_vec();
     let q_s = reader.string()?.to_vec();
     let signature = reader.string()?.to_vec();
@@ -191,7 +191,7 @@ pub fn server(conn: &mut Conn, host: &SigningKey, v_c: &str, v_s: &str) -> Resul
     let i_c = conn.expect(KEXINIT, "the client's key-exchange offer")?;
 
     let init = conn.expect(KEX_ECDH_INIT, "the client's ephemeral key")?;
-    let q_c = Reader::new(&init[1..]).string()?.to_vec();
+    let q_c = Cursor::new(&init[1..]).string()?.to_vec();
 
     let (secret, q_s) = ephemeral()?;
     let peer = <[u8; 32]>::try_from(q_c.as_slice())
@@ -211,13 +211,13 @@ pub fn server(conn: &mut Conn, host: &SigningKey, v_c: &str, v_s: &str) -> Resul
     });
     let signature = signature_blob(&host.sign(&hash));
 
-    let mut reply = Writer::new();
+    let mut reply = Vec::new();
     reply
         .byte(KEX_ECDH_REPLY)
         .string(&k_s)
         .string(&q_s)
         .string(&signature);
-    conn.send(&reply.finish())?;
+    conn.send(&reply)?;
 
     conn.send(&[NEWKEYS])?;
     conn.expect(NEWKEYS, "the client's new keys")?;
@@ -231,15 +231,15 @@ pub fn server(conn: &mut Conn, host: &SigningKey, v_c: &str, v_s: &str) -> Resul
 /// The `ssh-ed25519` signature blob: the algorithm name and the 64-byte
 /// signature.
 fn signature_blob(signature: &Signature) -> Vec<u8> {
-    let mut writer = Writer::new();
+    let mut writer = Vec::new();
     writer.string(HOST_KEY.as_bytes());
     writer.string(&signature.to_bytes());
-    writer.finish()
+    writer
 }
 
 /// Verify a host signature `blob` over `hash` against the host key `blob`.
 fn verify_host(k_s: &[u8], sig_blob: &[u8], hash: &[u8]) -> Result<()> {
-    let mut key = Reader::new(k_s);
+    let mut key = Cursor::new(k_s);
     if key.string()? != HOST_KEY.as_bytes() {
         return Err(protocol_error("a host key that is not ssh-ed25519"));
     }
@@ -247,7 +247,7 @@ fn verify_host(k_s: &[u8], sig_blob: &[u8], hash: &[u8]) -> Result<()> {
         .map_err(|_| protocol_error("a host key that is not 32 bytes"))?;
     let verifying = VerifyingKey::from_bytes(&public)
         .map_err(|_| protocol_error("a host key that is not a valid Ed25519 point"))?;
-    let mut sig = Reader::new(sig_blob);
+    let mut sig = Cursor::new(sig_blob);
     if sig.string()? != HOST_KEY.as_bytes() {
         return Err(protocol_error("a signature that is not ssh-ed25519"));
     }
@@ -278,7 +278,7 @@ mod tests {
         let payload = kexinit().expect("kexinit");
         assert_eq!(payload[0], KEXINIT);
         // byte, 16-byte cookie, then the first name-list is the kex algorithm.
-        let mut reader = Reader::new(&payload[17..]);
+        let mut reader = Cursor::new(&payload[17..]);
         assert_eq!(reader.string().expect("kex"), b"curve25519-sha256");
         assert_eq!(reader.string().expect("host key"), HOST_KEY.as_bytes());
         assert_eq!(reader.string().expect("cipher"), b"aes256-ctr");

@@ -6,9 +6,11 @@
 
 use std::collections::VecDeque;
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
-use crate::packet::{Conn, Reader, Writer};
+use crate::packet::{Conn, Ssh, SshWrite};
 
 /// Open a channel.
 pub const CHANNEL_OPEN: u8 = 90;
@@ -49,27 +51,27 @@ impl<'conn> Channel<'conn> {
     /// # Errors
     /// Where the open or the subsystem request was refused.
     pub fn open(conn: &'conn mut Conn) -> Result<Self> {
-        let mut open = Writer::new();
+        let mut open = Vec::new();
         open.byte(CHANNEL_OPEN)
             .string(b"session")
-            .u32(0)
-            .u32(INITIAL_WINDOW)
-            .u32(u32::try_from(MAX_CHANNEL_PACKET).unwrap_or(u32::MAX));
-        conn.send(&open.finish())?;
+            .u32_be(0)
+            .u32_be(INITIAL_WINDOW)
+            .u32_be(u32::try_from(MAX_CHANNEL_PACKET).unwrap_or(u32::MAX));
+        conn.send(&open)?;
 
         let confirmation = conn.expect(CHANNEL_OPEN_CONFIRMATION, "the channel confirmation")?;
-        let mut reader = Reader::new(&confirmation[1..]);
-        let _local = reader.u32()?;
-        let remote_id = reader.u32()?;
+        let mut reader = Cursor::new(&confirmation[1..]);
+        let _local = reader.u32_be()?;
+        let remote_id = reader.u32_be()?;
 
-        let mut request = Writer::new();
+        let mut request = Vec::new();
         request
             .byte(CHANNEL_REQUEST)
-            .u32(remote_id)
+            .u32_be(remote_id)
             .string(b"subsystem")
             .bool(true)
             .string(b"sftp");
-        conn.send(&request.finish())?;
+        conn.send(&request)?;
         conn.expect(CHANNEL_SUCCESS, "the subsystem confirmation")?;
 
         Ok(Self {
@@ -88,24 +90,24 @@ impl<'conn> Channel<'conn> {
     /// Where the open was not a session or the request not the subsystem.
     pub fn accept(conn: &'conn mut Conn) -> Result<Self> {
         let open = conn.expect(CHANNEL_OPEN, "a channel open")?;
-        let mut reader = Reader::new(&open[1..]);
+        let mut reader = Cursor::new(&open[1..]);
         if reader.string()? != b"session" {
             return Err(protocol_error("a channel open that was not for a session"));
         }
-        let remote_id = reader.u32()?;
+        let remote_id = reader.u32_be()?;
 
-        let mut confirmation = Writer::new();
+        let mut confirmation = Vec::new();
         confirmation
             .byte(CHANNEL_OPEN_CONFIRMATION)
-            .u32(remote_id)
-            .u32(0)
-            .u32(INITIAL_WINDOW)
-            .u32(u32::try_from(MAX_CHANNEL_PACKET).unwrap_or(u32::MAX));
-        conn.send(&confirmation.finish())?;
+            .u32_be(remote_id)
+            .u32_be(0)
+            .u32_be(INITIAL_WINDOW)
+            .u32_be(u32::try_from(MAX_CHANNEL_PACKET).unwrap_or(u32::MAX));
+        conn.send(&confirmation)?;
 
         let request = conn.expect(CHANNEL_REQUEST, "a channel request")?;
-        let mut reader = Reader::new(&request[1..]);
-        let _recipient = reader.u32()?;
+        let mut reader = Cursor::new(&request[1..]);
+        let _recipient = reader.u32_be()?;
         if reader.string()? != b"subsystem" {
             return Err(protocol_error("a channel request that was not a subsystem"));
         }
@@ -114,9 +116,9 @@ impl<'conn> Channel<'conn> {
             return Err(protocol_error("a subsystem other than sftp"));
         }
         conn.send(&{
-            let mut ok = Writer::new();
-            ok.byte(CHANNEL_SUCCESS).u32(remote_id);
-            ok.finish()
+            let mut ok = Vec::new();
+            ok.byte(CHANNEL_SUCCESS).u32_be(remote_id);
+            ok
         })?;
 
         Ok(Self {
@@ -134,9 +136,9 @@ impl<'conn> Channel<'conn> {
     /// Where the socket failed.
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         for chunk in bytes.chunks(MAX_CHANNEL_PACKET) {
-            let mut data = Writer::new();
-            data.byte(CHANNEL_DATA).u32(self.remote_id).string(chunk);
-            self.conn.send(&data.finish())?;
+            let mut data = Vec::new();
+            data.byte(CHANNEL_DATA).u32_be(self.remote_id).string(chunk);
+            self.conn.send(&data)?;
         }
         Ok(())
     }
@@ -162,8 +164,8 @@ impl<'conn> Channel<'conn> {
         let message = self.conn.recv()?;
         match message.first().copied() {
             Some(CHANNEL_DATA) => {
-                let mut reader = Reader::new(&message[1..]);
-                let _recipient = reader.u32()?;
+                let mut reader = Cursor::new(&message[1..]);
+                let _recipient = reader.u32_be()?;
                 self.incoming.extend(reader.string()?.iter().copied());
                 Ok(true)
             }
@@ -217,11 +219,11 @@ impl<'conn> Channel<'conn> {
     /// # Errors
     /// Where the socket failed.
     pub fn close(&mut self) -> Result<()> {
-        let mut eof = Writer::new();
-        eof.byte(CHANNEL_EOF).u32(self.remote_id);
-        self.conn.send(&eof.finish())?;
-        let mut close = Writer::new();
-        close.byte(CHANNEL_CLOSE).u32(self.remote_id);
-        self.conn.send(&close.finish())
+        let mut eof = Vec::new();
+        eof.byte(CHANNEL_EOF).u32_be(self.remote_id);
+        self.conn.send(&eof)?;
+        let mut close = Vec::new();
+        close.byte(CHANNEL_CLOSE).u32_be(self.remote_id);
+        self.conn.send(&close)
     }
 }

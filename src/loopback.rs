@@ -12,7 +12,6 @@ use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, socket};
 
 use crate::server::{self, Served};
-use crate::userauth::base64;
 use crate::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER, SftpTransport};
 
 /// The file name the loopback's near end puts.
@@ -88,8 +87,16 @@ fn arrival(peer: &str, served: &Served) -> Result<Arrived> {
         let _ = write!(origin, "&{SSH_KEY}={fingerprint}");
     }
     if let Some(signature) = &served.who.signature {
-        let _ = write!(origin, "&{SSH_SIGNATURE}={}", base64(signature));
-        let _ = write!(origin, "&{SSH_SESSION}={}", base64(&served.session_id));
+        let _ = write!(
+            origin,
+            "&{SSH_SIGNATURE}={}",
+            codec::base64::encode_unpadded(signature)
+        );
+        let _ = write!(
+            origin,
+            "&{SSH_SESSION}={}",
+            codec::base64::encode_unpadded(&served.session_id)
+        );
     }
     Ok(Arrived::new(origin, bytes.clone()))
 }
