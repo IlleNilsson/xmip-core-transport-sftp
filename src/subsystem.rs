@@ -6,10 +6,12 @@
 
 use std::collections::BTreeMap;
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
 use crate::channel::Channel;
-use crate::packet::{Reader, Writer};
+use crate::packet::{Ssh, SshWrite};
 
 pub(crate) const INIT: u8 = 1;
 pub(crate) const VERSION: u8 = 2;
@@ -59,11 +61,11 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
             channel,
             next_id: 1,
         };
-        let mut init = Writer::new();
-        init.u32(PROTOCOL);
-        sftp.send(INIT, &init.finish())?;
+        let mut init = Vec::new();
+        init.u32_be(PROTOCOL);
+        sftp.send(INIT, &init)?;
         let (kind, body) = sftp.recv()?;
-        if kind != VERSION || Reader::new(&body).u32()? != PROTOCOL {
+        if kind != VERSION || Cursor::new(&body).u32_be()? != PROTOCOL {
             return Err(protocol_error(
                 "a server that does not speak SFTP version 3",
             ));
@@ -82,13 +84,13 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
             .chunks(CHUNK)
             .chain(bytes.is_empty().then_some(&[][..]))
         {
-            let mut write = Writer::new();
+            let mut write = Vec::new();
             write
-                .u32(self.id())
+                .u32_be(self.id())
                 .string(handle.as_bytes())
-                .u64(offset)
+                .u64_be(offset)
                 .string(chunk);
-            self.request(WRITE, &write.finish(), "the write")?;
+            self.request(WRITE, &write, "the write")?;
             offset += chunk.len() as u64;
         }
         self.close(&handle)
@@ -102,17 +104,17 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         let handle = self.open(name, F_READ)?;
         let mut bytes = Vec::new();
         loop {
-            let mut read = Writer::new();
-            read.u32(self.id())
+            let mut read = Vec::new();
+            read.u32_be(self.id())
                 .string(handle.as_bytes())
-                .u64(bytes.len() as u64)
-                .u32(u32::try_from(CHUNK).unwrap_or(u32::MAX));
-            self.send(READ, &read.finish())?;
+                .u64_be(bytes.len() as u64)
+                .u32_be(u32::try_from(CHUNK).unwrap_or(u32::MAX));
+            self.send(READ, &read)?;
             let (kind, body) = self.recv()?;
             match kind {
                 DATA => {
-                    let mut reader = Reader::new(&body);
-                    let _id = reader.u32()?;
+                    let mut reader = Cursor::new(&body);
+                    let _id = reader.u32_be()?;
                     bytes.extend_from_slice(reader.string()?);
                 }
                 STATUS if code(&body)? == EOF => break,
@@ -129,15 +131,15 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
     /// # Errors
     /// Where the directory could not be opened or listed.
     pub fn list(&mut self) -> Result<Vec<String>> {
-        let mut opendir = Writer::new();
-        opendir.u32(self.id()).string(b".");
-        self.send(OPENDIR, &opendir.finish())?;
+        let mut opendir = Vec::new();
+        opendir.u32_be(self.id()).string(b".");
+        self.send(OPENDIR, &opendir)?;
         let handle = self.expect_handle()?;
         let mut names = Vec::new();
         loop {
-            let mut readdir = Writer::new();
-            readdir.u32(self.id()).string(handle.as_bytes());
-            self.send(READDIR, &readdir.finish())?;
+            let mut readdir = Vec::new();
+            readdir.u32_be(self.id()).string(handle.as_bytes());
+            self.send(READDIR, &readdir)?;
             let (kind, body) = self.recv()?;
             match kind {
                 NAME => names.extend(entries(&body)?),
@@ -156,32 +158,32 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
     /// # Errors
     /// Where the server refused.
     pub fn remove(&mut self, name: &str) -> Result<()> {
-        let mut remove = Writer::new();
-        remove.u32(self.id()).string(name.as_bytes());
-        self.request(REMOVE, &remove.finish(), "the remove")
+        let mut remove = Vec::new();
+        remove.u32_be(self.id()).string(name.as_bytes());
+        self.request(REMOVE, &remove, "the remove")
     }
 
     fn open(&mut self, name: &str, flags: u32) -> Result<String> {
-        let mut open = Writer::new();
-        open.u32(self.id())
+        let mut open = Vec::new();
+        open.u32_be(self.id())
             .string(name.as_bytes())
-            .u32(flags)
-            .u32(0);
-        self.send(OPEN, &open.finish())?;
+            .u32_be(flags)
+            .u32_be(0);
+        self.send(OPEN, &open)?;
         self.expect_handle()
     }
 
     fn close(&mut self, handle: &str) -> Result<()> {
-        let mut close = Writer::new();
-        close.u32(self.id()).string(handle.as_bytes());
-        self.request(CLOSE, &close.finish(), "the close")
+        let mut close = Vec::new();
+        close.u32_be(self.id()).string(handle.as_bytes());
+        self.request(CLOSE, &close, "the close")
     }
 
     fn expect_handle(&mut self) -> Result<String> {
         let (kind, body) = self.recv()?;
         if kind == HANDLE {
-            let mut reader = Reader::new(&body);
-            let _id = reader.u32()?;
+            let mut reader = Cursor::new(&body);
+            let _id = reader.u32_be()?;
             String::from_utf8(reader.string()?.to_vec())
                 .map_err(|_| protocol_error("a handle that is not UTF-8"))
         } else if kind == STATUS {
@@ -229,38 +231,40 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
 /// A framed SFTP packet: the length, the type, the body. Shared with the far
 /// end, which frames the same way.
 pub(crate) fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
-    let mut out = Writer::new();
-    out.u32(u32::try_from(body.len() + 1).unwrap_or(u32::MAX))
-        .byte(kind);
-    let mut bytes = out.finish();
-    bytes.extend_from_slice(body);
-    bytes
+    let mut out = Vec::with_capacity(body.len() + 5);
+    out.u32_be(u32::try_from(body.len() + 1).unwrap_or(u32::MAX))
+        .byte(kind)
+        .bytes(body);
+    out
 }
 
 /// The status code an SFTP STATUS body carries.
 pub(crate) fn code(body: &[u8]) -> Result<u32> {
-    let mut reader = Reader::new(body);
-    let _id = reader.u32()?;
-    reader.u32()
+    let mut reader = Cursor::new(body);
+    let _id = reader.u32_be()?;
+    Ok(reader.u32_be()?)
 }
 
 /// The names a NAME body carries.
 pub(crate) fn entries(body: &[u8]) -> Result<Vec<String>> {
-    let mut reader = Reader::new(body);
-    let _id = reader.u32()?;
-    let count = reader.u32()?;
+    let mut reader = Cursor::new(body);
+    let _id = reader.u32_be()?;
+    let count = reader.u32_be()?;
     let mut names = Vec::new();
     for _ in 0..count {
         names.push(utf8(reader.string()?)?);
         let _longname = reader.string()?;
-        let _attrs = reader.u32()?;
+        let _attrs = reader.u32_be()?;
     }
     Ok(names)
 }
 
 fn status_error(body: &[u8], what: &str) -> transport::TransportError {
-    let mut reader = Reader::new(body);
-    let code = reader.u32().and_then(|_| reader.u32()).unwrap_or(FAILURE);
+    let mut reader = Cursor::new(body);
+    let code = reader
+        .u32_be()
+        .and_then(|_| reader.u32_be())
+        .unwrap_or(FAILURE);
     protocol_error(format!("the server refused {what} with SFTP status {code}"))
 }
 
@@ -287,17 +291,17 @@ mod tests {
 
     #[test]
     fn a_status_code_and_a_name_list_read_back_off_their_bodies() {
-        let mut status = Writer::new();
-        status.u32(7).u32(EOF).string(b"done").string(b"");
-        assert_eq!(code(&status.finish()).expect("code"), EOF);
-        let mut name = Writer::new();
-        name.u32(1).u32(2);
+        let mut status = Vec::new();
+        status.u32_be(7).u32_be(EOF).string(b"done").string(b"");
+        assert_eq!(code(&status).expect("code"), EOF);
+        let mut name = Vec::new();
+        name.u32_be(1).u32_be(2);
         for entry in ["one", "two"] {
             name.string(entry.as_bytes())
                 .string(entry.as_bytes())
-                .u32(0);
+                .u32_be(0);
         }
-        assert_eq!(entries(&name.finish()).expect("names"), vec!["one", "two"]);
+        assert_eq!(entries(&name).expect("names"), vec!["one", "two"]);
     }
 
     #[test]

@@ -37,6 +37,8 @@ aes = "0.8"
 ctr = "0.9"
 hmac = "0.12"
 getrandom = "0.2"
+# The estate's encoding primitives: the byte cursor and writer, and a fingerprint in base 64.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test support
