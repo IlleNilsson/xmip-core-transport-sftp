@@ -9,7 +9,8 @@ or public-key authentication and the `sftp` subsystem over one channel. The
 transport brings its own far end (ADR-0051): an in-process SSH server serves a
 directory held in memory, so one exchange runs both ways on this machine, and
 a public-key login is promoted onto the arrival as `ssh.key`, `ssh.user`,
-`ssh.signature` and `ssh.session` for the identity gate.
+`ssh.signature` and `ssh.session` for the identity gate, names declared once
+in `xmip-core-context` (`context::property`) for this transport and the gates.
 
 ## Toolchain
 

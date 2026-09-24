@@ -24,8 +24,9 @@
 //! peer onto the arrival for the identity gate that follows: the origin URI
 //! carries the key's fingerprint as `ssh.key`, the user as `ssh.user`, and the
 //! signature and session identifier as `ssh.signature` and `ssh.session` —
-//! the vocabulary `xmip-core-identify-ssh-key` and `-username` read. A
-//! password authentication carries only `ssh.user`.
+//! the vocabulary `xmip-core-identify-ssh-key` and `-username` read, each
+//! name declared once in `context::property`. A password authentication
+//! carries only `ssh.user`.
 //!
 //! What is not here: only `aes256-ctr` with `hmac-sha2-256` is offered, so a
 //! peer that will speak nothing else cannot connect; there is no known-hosts
@@ -54,15 +55,6 @@ use transport::error::Result;
 use transport::loopback::LOOPBACK_TIMEOUT;
 use transport::socket;
 use transport::{Arrived, Directions, NoNativeClaim, ResourceClaim, Transport};
-
-/// The property carrying the peer's public-key fingerprint.
-pub const SSH_KEY: &str = "ssh.key";
-/// The property carrying the authenticated user.
-pub const SSH_USER: &str = "ssh.user";
-/// The property carrying the signature the peer made with its key.
-pub const SSH_SIGNATURE: &str = "ssh.signature";
-/// The property carrying the session identifier the signature covers.
-pub const SSH_SESSION: &str = "ssh.session";
 
 /// Speak SFTP as a client, and stand up an in-process far end.
 pub struct SftpTransport {

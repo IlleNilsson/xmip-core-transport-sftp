@@ -27,6 +27,9 @@ path = "src/lib.rs"
 # the carrier the manifest declares: the far end binds through it.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilsson/xmip-core-transport-tcp", branch = "main" }
+# The names the peer's key, user, signature and session travel under, which
+# the identity gates read (context::property).
+context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
 # The cryptography the SSH transport is built from: one key-exchange curve,
 # one host-key algorithm, and one cipher suite (aes256-ctr with
 # hmac-sha2-256). The binary framing is the standard library's.

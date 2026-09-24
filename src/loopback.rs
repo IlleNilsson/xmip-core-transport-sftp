@@ -7,12 +7,15 @@ use std::net::TcpListener;
 
 use ed25519_dalek::SigningKey;
 
+use context::property::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER};
+use transport::ceiling;
 use transport::error::{Result, protocol_error};
+use transport::listening::Listening;
 use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, socket};
 
+use crate::SftpTransport;
 use crate::server::{self, Served};
-use crate::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER, SftpTransport};
 
 /// The file name the loopback's near end puts.
 const PROBE: &str = "probe.bin";
@@ -23,24 +26,29 @@ impl Loopback for SftpTransport {
     }
 
     fn refuses(&self, payload: &[u8]) -> Option<String> {
-        (payload.len() > Self::CEILING).then(|| {
-            format!(
-                "a payload of {} bytes, over the {} the in-memory far end holds whole",
-                payload.len(),
-                Self::CEILING
-            )
-        })
+        ceiling::within(
+            payload.len(),
+            Self::CEILING,
+            "the in-memory far end holds whole",
+        )
+        .err()
+        .map(|refused| refused.message)
     }
 
+    /// A bound SSH server waiting for its one client, serving one
+    /// directory. Bound through the tcp carrier this transport is declared
+    /// over.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        // Bind through the tcp carrier this transport is declared over.
-        let (listener, address) = tcp::TcpTransport::new(self.authority()).bind()?;
-        Ok(Box::new(Inbox {
-            listener,
-            address,
-            host: SigningKey::from_bytes(&[0x5e; 32]),
-            timeout: self.timeout,
-        }))
+        let host = SigningKey::from_bytes(&[0x5e; 32]);
+        let timeout = self.timeout;
+        Ok(Box::new(Listening::new(
+            move |listener: &TcpListener| {
+                let (stream, peer) = socket::accept_tcp(listener, timeout)?;
+                let served = server::serve(stream, &host, crate::subsystem::Files::new())?;
+                arrival(&peer.to_string(), &served)
+            },
+            tcp::TcpTransport::new(self.authority()).bind()?,
+        )))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
@@ -51,26 +59,6 @@ impl Loopback for SftpTransport {
             timeout: self.timeout,
         };
         near.connect(address)?.put(PROBE, payload)
-    }
-}
-
-/// A bound SSH server waiting for its one client, serving one directory.
-struct Inbox {
-    listener: TcpListener,
-    address: String,
-    host: SigningKey,
-    timeout: Option<std::time::Duration>,
-}
-
-impl FarEnd for Inbox {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
-        let (stream, peer) = socket::accept_tcp(&self.listener, self.timeout)?;
-        let served = server::serve(stream, &self.host, crate::subsystem::Files::new())?;
-        arrival(&peer.to_string(), &served)
     }
 }
 
