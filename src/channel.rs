@@ -8,9 +8,10 @@ use std::collections::VecDeque;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
-use crate::packet::{Conn, Ssh, SshWrite};
+use crate::packet::Conn;
 
 /// Open a channel.
 pub const CHANNEL_OPEN: u8 = 90;
@@ -69,7 +70,7 @@ impl<'conn> Channel<'conn> {
             .byte(CHANNEL_REQUEST)
             .u32_be(remote_id)
             .string(b"subsystem")
-            .bool(true)
+            .boolean(true)
             .string(b"sftp");
         conn.send(&request)?;
         conn.expect(CHANNEL_SUCCESS, "the subsystem confirmation")?;
@@ -111,7 +112,7 @@ impl<'conn> Channel<'conn> {
         if reader.string()? != b"subsystem" {
             return Err(protocol_error("a channel request that was not a subsystem"));
         }
-        let _want_reply = reader.bool()?;
+        let _want_reply = reader.boolean()?;
         if reader.string()? != b"sftp" {
             return Err(protocol_error("a subsystem other than sftp"));
         }

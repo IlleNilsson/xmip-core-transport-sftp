@@ -12,6 +12,11 @@ a public-key login is promoted onto the arrival as `ssh.key`, `ssh.user`,
 `ssh.signature` and `ssh.session` for the identity gate, names declared once
 in `xmip-core-context` (`context::property`) for this transport and the gates.
 
+Every message is built and read with `xmip-core-library-ssh`, the one home of
+SSH's wire types — `boolean`, `string`, `mpint`, `name-list` — which the
+ssh-key gate reads its blobs with too; the binary packet framing of RFC 4253
+section 6 is this transport's own (ADR-0050, amendment 2026-09-25).
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

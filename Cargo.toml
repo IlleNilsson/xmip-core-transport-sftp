@@ -32,7 +32,7 @@ tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilss
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
 # The cryptography the SSH transport is built from: one key-exchange curve,
 # one host-key algorithm, and one cipher suite (aes256-ctr with
-# hmac-sha2-256). The binary framing is the standard library's.
+# hmac-sha2-256). The binary framing is this crate's own.
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = "2"
 sha2 = "0.10"
@@ -42,6 +42,8 @@ hmac = "0.12"
 getrandom = "0.2"
 # The estate's encoding primitives: the byte cursor and writer, and a fingerprint in base 64.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The SSH wire types every message is built from: string, mpint, name-list.
+ssh = { package = "xmip-core-library-ssh", git = "https://github.com/IlleNilsson/xmip-core-library-ssh", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test support

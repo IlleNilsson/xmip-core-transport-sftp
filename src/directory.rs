@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
 use crate::channel::Channel;
-use crate::packet::{Ssh, SshWrite};
 use crate::subsystem::{
     CLOSE, DATA, EOF, F_WRITE, FAILURE, Files, HANDLE, INIT, NAME, NO_SUCH_FILE, OK, OPEN, OPENDIR,
     PROTOCOL, READ, READDIR, REMOVE, STATUS, VERSION, WRITE, frame, utf8,
