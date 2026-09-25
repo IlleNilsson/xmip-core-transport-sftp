@@ -15,9 +15,10 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
-use crate::packet::{Conn, Ssh, SshWrite};
+use crate::packet::Conn;
 
 /// The message that opens the key exchange.
 pub const KEXINIT: u8 = 20;
@@ -59,21 +60,22 @@ fn kexinit() -> Result<Vec<u8>> {
     for byte in cookie {
         writer.byte(byte);
     }
-    for names in [
-        "curve25519-sha256",
-        HOST_KEY,
-        "aes256-ctr",
-        "aes256-ctr",
-        "hmac-sha2-256",
-        "hmac-sha2-256",
-        "none",
-        "none",
-        "",
-        "",
-    ] {
-        writer.string(names.as_bytes());
+    let offer: [&[&str]; 10] = [
+        &["curve25519-sha256"],
+        &[HOST_KEY],
+        &["aes256-ctr"],
+        &["aes256-ctr"],
+        &["hmac-sha2-256"],
+        &["hmac-sha2-256"],
+        &["none"],
+        &["none"],
+        &[],
+        &[],
+    ];
+    for names in offer {
+        writer.name_list(names);
     }
-    writer.bool(false);
+    writer.boolean(false);
     writer.u32_be(0);
     Ok(writer)
 }
@@ -279,9 +281,9 @@ mod tests {
         assert_eq!(payload[0], KEXINIT);
         // byte, 16-byte cookie, then the first name-list is the kex algorithm.
         let mut reader = Cursor::new(&payload[17..]);
-        assert_eq!(reader.string().expect("kex"), b"curve25519-sha256");
-        assert_eq!(reader.string().expect("host key"), HOST_KEY.as_bytes());
-        assert_eq!(reader.string().expect("cipher"), b"aes256-ctr");
+        assert_eq!(reader.name_list().expect("kex"), ["curve25519-sha256"]);
+        assert_eq!(reader.name_list().expect("host key"), [HOST_KEY]);
+        assert_eq!(reader.name_list().expect("cipher"), ["aes256-ctr"]);
     }
 
     #[test]

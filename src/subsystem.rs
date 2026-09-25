@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
 use crate::channel::Channel;
-use crate::packet::{Ssh, SshWrite};
 
 pub(crate) const INIT: u8 = 1;
 pub(crate) const VERSION: u8 = 2;

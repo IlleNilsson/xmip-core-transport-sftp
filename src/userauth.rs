@@ -13,10 +13,11 @@ use sha2::{Digest, Sha256};
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
 use crate::kex::{HOST_KEY, host_key_blob};
-use crate::packet::{Conn, Ssh, SshWrite};
+use crate::packet::Conn;
 
 /// The message that offers a credential.
 pub const USERAUTH_REQUEST: u8 = 50;
@@ -69,7 +70,7 @@ pub fn password(conn: &mut Conn, user: &str, secret: &str) -> Result<()> {
         .string(user.as_bytes())
         .string(CONNECTION.as_bytes())
         .string(b"password")
-        .bool(false)
+        .boolean(false)
         .string(secret.as_bytes());
     conn.send(&request)?;
     admitted(conn)
@@ -89,7 +90,7 @@ pub fn public_key(conn: &mut Conn, user: &str, key: &SigningKey, session_id: &[u
         .string(user.as_bytes())
         .string(CONNECTION.as_bytes())
         .string(b"publickey")
-        .bool(true)
+        .boolean(true)
         .string(HOST_KEY.as_bytes())
         .string(&blob)
         .string(&signature);
@@ -137,7 +138,7 @@ pub fn serve(conn: &mut Conn, session_id: &[u8]) -> Result<Authenticated> {
         failure
             .byte(USERAUTH_FAILURE)
             .string(b"publickey,password")
-            .bool(false);
+            .boolean(false);
         conn.send(&failure)?;
     }
 }
@@ -151,7 +152,7 @@ fn admit(message: &[u8], session_id: &[u8]) -> Result<Option<Authenticated>> {
     let method = reader.string()?;
     match method {
         b"password" => {
-            let _has = reader.bool()?;
+            let _has = reader.boolean()?;
             let _secret = reader.string()?;
             Ok(Some(Authenticated {
                 user,
@@ -160,7 +161,7 @@ fn admit(message: &[u8], session_id: &[u8]) -> Result<Option<Authenticated>> {
             }))
         }
         b"publickey" => {
-            let signed = reader.bool()?;
+            let signed = reader.boolean()?;
             if !signed {
                 return Ok(None);
             }
@@ -212,7 +213,7 @@ fn signed_data(session_id: &[u8], user: &str, blob: &[u8]) -> Vec<u8> {
         .string(user.as_bytes())
         .string(CONNECTION.as_bytes())
         .string(b"publickey")
-        .bool(true)
+        .boolean(true)
         .string(HOST_KEY.as_bytes())
         .string(blob);
     writer
@@ -275,7 +276,7 @@ mod tests {
             .string(b"partner")
             .string(CONNECTION.as_bytes())
             .string(b"password")
-            .bool(false)
+            .boolean(false)
             .string(b"secret");
         let who = admit(&request, &[0u8; 32])
             .expect("read")
