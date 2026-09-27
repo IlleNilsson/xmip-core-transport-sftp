@@ -119,4 +119,11 @@ impl Conn {
         self.tx = tx;
         self.rx = rx;
     }
+
+    /// The socket the packets cross, for a check that the peer still has
+    /// it open.
+    #[must_use]
+    pub const fn socket(&self) -> &TcpStream {
+        &self.writer
+    }
 }

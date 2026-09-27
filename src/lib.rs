@@ -54,7 +54,7 @@ pub use server::Served;
 use transport::error::Result;
 use transport::loopback::LOOPBACK_TIMEOUT;
 use transport::socket;
-use transport::{Arrived, Configured, Directions, NoNativeClaim, ResourceClaim, Transport};
+use transport::{Arrived, Configured, Directions, NoNativeClaim, Pool, ResourceClaim, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
@@ -63,6 +63,9 @@ pub struct SftpTransport {
     user: String,
     credential: Credential,
     timeout: Option<Duration>,
+    /// The connections a send puts on, keys exchanged and authenticated
+    /// once per server and kept.
+    clients: Pool<Client>,
 }
 
 impl SftpTransport {
@@ -80,6 +83,7 @@ impl SftpTransport {
             user: "xmip".to_string(),
             credential: Credential::Password("xmip".to_string()),
             timeout: None,
+            clients: Pool::new(),
         }
     }
 
@@ -205,9 +209,15 @@ impl Transport for SftpTransport {
             .collect())
     }
 
+    /// Put the file on the connection kept for the server, keys exchanged
+    /// and authenticated on the first send to it; a channel per file.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (address, name) = self.resolve(target);
-        self.connect(address)?.put(name, bytes)
+        self.clients.exchange(
+            address,
+            || self.connect(address),
+            |client| client.put(name, bytes),
+        )
     }
 
     fn claims(&self) -> Option<&dyn ResourceClaim> {
@@ -252,6 +262,45 @@ mod tests {
             ("other:22", "b.edi")
         );
         assert_eq!(transport.resolve("plain.edi"), ("host:22", "plain.edi"));
+    }
+
+    #[test]
+    fn a_hundred_puts_exchange_keys_once_and_a_connection_the_server_closed_is_replaced() {
+        // A hundred: each put is a channel of its own, which is SFTP's.
+        const SENDS: usize = 100;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        let far_end = std::thread::spawn(move || {
+            let host = SigningKey::from_bytes(&[0x5e; 32]);
+            let mut served = Vec::new();
+            for most in [SENDS, usize::MAX] {
+                let (stream, _) =
+                    socket::accept_tcp(&listener, Some(Duration::from_secs(5))).expect("accept");
+                let files = subsystem::Files::new();
+                served.push(server::serve_channels(stream, &host, files, most).expect("served"));
+            }
+            served
+        });
+        let near = SftpTransport::new(address).timing_out_after(Duration::from_secs(5));
+        let began = std::time::Instant::now();
+        for n in 0..SENDS {
+            near.send(&format!("{n}.edi"), n.to_string().as_bytes())
+                .expect("put");
+        }
+        let took = began.elapsed();
+        // Generous for a debug build under load: five milliseconds a put.
+        assert!(took < Duration::from_millis(5 * SENDS as u64), "{took:?}");
+        near.send("last.edi", b"after the close")
+            .expect("put again");
+        assert_eq!(near.clients.opened(), 2);
+        drop(near);
+        let served = far_end.join().expect("far end");
+        // One key exchange and one authentication for every put.
+        assert_eq!(served[0].files.len(), SENDS);
+        assert_eq!(
+            served[1].files.get("last.edi").expect("kept"),
+            b"after the close"
+        );
     }
 
     #[test]

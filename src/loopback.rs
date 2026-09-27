@@ -11,7 +11,7 @@ use context::property::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER};
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, Loopback};
-use transport::{Arrived, socket};
+use transport::{Arrived, Pool, socket};
 
 use crate::SftpTransport;
 use crate::server::{self, Served};
@@ -42,6 +42,7 @@ impl Loopback for SftpTransport {
             user: self.user.clone(),
             credential: self.credential.clone(),
             timeout: self.timeout,
+            clients: Pool::new(),
         };
         near.connect(address)?.put(PROBE, payload)
     }

@@ -215,16 +215,27 @@ impl<'conn> Channel<'conn> {
         Ok(Some(full[4..].to_vec()))
     }
 
-    /// Say goodbye: end of data, then close.
+    /// Say goodbye, from either end: end of data, then close, and take the
+    /// peer's close in answer (RFC 4254 section 5.3), so a connection kept
+    /// for the next channel carries nothing of this one. A peer that hangs
+    /// up instead has closed the channel as surely; the connection it
+    /// leaves is not kept.
     ///
     /// # Errors
-    /// Where the socket failed.
+    /// Where the socket failed before the close was sent.
     pub fn close(&mut self) -> Result<()> {
         let mut eof = Vec::new();
         eof.byte(CHANNEL_EOF).u32_be(self.remote_id);
         self.conn.send(&eof)?;
         let mut close = Vec::new();
         close.byte(CHANNEL_CLOSE).u32_be(self.remote_id);
-        self.conn.send(&close)
+        self.conn.send(&close)?;
+        while !self.closed {
+            match self.conn.recv() {
+                Ok(message) => self.closed = message.first() == Some(&CHANNEL_CLOSE),
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 }

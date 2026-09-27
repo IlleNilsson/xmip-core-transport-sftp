@@ -1,8 +1,10 @@
 //! The in-process far end: a minimal SSH server that offers the `sftp`
 //! subsystem over a directory held in memory, so the transport is both ends
 //! of one exchange on this machine (ADR-0051). It is not a general SSH
-//! server — one connection, one channel, one directory, every credential
-//! admitted — which is all a loopback and the Playground need.
+//! server — one connection, one channel at a time, one directory, every
+//! credential admitted — which is all a loopback and the Playground need.
+//! A client that keeps its connection opens a channel per file, and each is
+//! served in turn until the client hangs up.
 
 use std::net::TcpStream;
 
@@ -27,18 +29,43 @@ pub struct Served {
     pub session_id: Vec<u8>,
 }
 
-/// Serve one connection on `stream`, signing as `host`, over `files`.
+/// Serve one connection on `stream`, signing as `host`, over `files`: its
+/// channels one after another until the client hangs up.
 ///
 /// # Errors
-/// Where the key exchange, the authentication, the channel or the subsystem
-/// failed.
-pub fn serve(stream: TcpStream, host: &SigningKey, mut files: Files) -> Result<Served> {
+/// Where the key exchange, the authentication, the first channel or a
+/// subsystem failed.
+pub fn serve(stream: TcpStream, host: &SigningKey, files: Files) -> Result<Served> {
+    serve_channels(stream, host, files, usize::MAX)
+}
+
+/// [`serve`], and hang up after `most` channels: a far end that goes away
+/// while its client would carry on.
+///
+/// # Errors
+/// As [`serve`].
+pub fn serve_channels(
+    stream: TcpStream,
+    host: &SigningKey,
+    mut files: Files,
+    most: usize,
+) -> Result<Served> {
     let mut conn = Conn::new(stream)?;
     let peer = conn.banner(kex::IDENTIFICATION)?;
     let exchanged = kex::server(&mut conn, host, &peer, kex::IDENTIFICATION)?;
     let who = userauth::serve(&mut conn, &exchanged.session_id)?;
     let mut channel = Channel::accept(&mut conn)?;
     directory::serve(&mut channel, &mut files)?;
+    channel.close()?;
+    // A channel that does not open is the client gone: the connection ends
+    // there, as the one before it did.
+    for _ in 1..most {
+        let Ok(mut channel) = Channel::accept(&mut conn) else {
+            break;
+        };
+        directory::serve(&mut channel, &mut files)?;
+        channel.close()?;
+    }
     Ok(Served {
         files,
         who,
@@ -76,6 +103,8 @@ mod tests {
         )
         .expect("connect");
         client.put("probe.bin", b"one exchange").expect("put");
+        // Hung up, so the far end stops waiting for another channel.
+        drop(client);
         let served = far.join().expect("thread").expect("served");
         assert_eq!(
             served.files.get("probe.bin").expect("kept"),
@@ -113,6 +142,8 @@ mod tests {
         .expect("connect");
         let mut taken = client.harvest().expect("harvest");
         taken.sort();
+        // Hung up, so the far end stops waiting for another channel.
+        drop(client);
         let served = far.join().expect("thread").expect("served");
         assert_eq!(taken.len(), 2);
         assert_eq!(taken[0], ("a.edi".to_string(), b"first".to_vec()));
@@ -141,6 +172,8 @@ mod tests {
         )
         .expect("connect");
         client.put("big.bin", &payload).expect("put");
+        // Hung up, so the far end stops waiting for another channel.
+        drop(client);
         let served = far.join().expect("thread").expect("served");
         assert_eq!(served.files.get("big.bin").expect("kept"), &payload);
     }

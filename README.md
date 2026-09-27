@@ -17,6 +17,8 @@ SSH's wire types — `boolean`, `string`, `mpint`, `name-list` — which the
 ssh-key gate reads its blobs with too; the binary packet framing of RFC 4253
 section 6 is this transport's own (ADR-0050, amendment 2026-09-25).
 
+A Send Location puts on an SSH connection whose keys are exchanged and whose user is authenticated once per server and kept (`transport::Pool`), a channel per file, each closed from both ends; the far end serves channel after channel until the client hangs up. Until 2026-09-27 every put exchanged keys and authenticated.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
