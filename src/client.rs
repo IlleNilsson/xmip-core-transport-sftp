@@ -8,6 +8,7 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 
 use transport::error::Result;
+use transport::pool::{Pooled, alive};
 use transport::socket;
 
 use crate::channel::Channel;
@@ -25,9 +26,19 @@ pub enum Credential {
     PublicKey(Box<SigningKey>),
 }
 
-/// A connected, authenticated SSH client.
+/// A connected, authenticated SSH client, kept between files while the
+/// server keeps the connection open: the key exchange and the
+/// authentication once, a channel per file.
 pub struct Client {
     conn: Conn,
+}
+
+impl Pooled for Client {
+    /// While the server has not closed the connection. Each file's channel
+    /// is closed from both ends before the client is kept.
+    fn usable(&mut self) -> bool {
+        alive(self.conn.socket())
+    }
 }
 
 impl Client {
