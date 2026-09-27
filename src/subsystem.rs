@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use net::MAX_BODY;
 use ssh::{SshRead, SshWrite};
+use transport::ceiling;
 use transport::error::{Result, protocol_error};
 
 use crate::channel::Channel;
@@ -116,6 +118,7 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
                     let mut reader = Cursor::new(&body);
                     let _id = reader.u32_be()?;
                     bytes.extend_from_slice(reader.string()?);
+                    ceiling::within(bytes.len(), MAX_BODY, "Xmip reads of one file")?;
                 }
                 STATUS if code(&body)? == EOF => break,
                 STATUS => return Err(status_error(&body, "the read")),

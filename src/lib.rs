@@ -32,7 +32,7 @@
 //! peer that will speak nothing else cannot connect; there is no known-hosts
 //! check, so the host key is taken as presented (an inferred identity,
 //! ADR-0019 clause 8); and the subsystem holds each directory whole in
-//! memory, which is the [`SftpTransport::CEILING`] a payload may not exceed.
+//! memory, a file no larger than `net::MAX_BODY`.
 
 pub mod channel;
 pub mod cipher;
@@ -66,11 +66,6 @@ pub struct SftpTransport {
 }
 
 impl SftpTransport {
-    /// The largest payload the in-memory far end carries whole in one round:
-    /// sixteen mebibytes. A protocol fact of this loopback, not a wire limit
-    /// of SFTP, which chunks and streams without a size of its own.
-    pub const CEILING: usize = 16 * 1024 * 1024;
-
     /// The fixed key the loopback authenticates with, so its arrivals carry a
     /// stable fingerprint without drawing randomness at construction.
     const LOOPBACK_SEED: [u8; 32] = [0x7c; 32];

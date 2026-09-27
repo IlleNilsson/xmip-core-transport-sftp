@@ -51,10 +51,8 @@ pub struct Exchanged {
 
 /// The `SSH_MSG_KEXINIT` payload: a cookie and the one-name lists this
 /// transport offers.
-fn kexinit() -> Result<Vec<u8>> {
-    let mut cookie = [0u8; 16];
-    getrandom::getrandom(&mut cookie)
-        .map_err(|_| protocol_error("the system would not draw a key-exchange cookie"))?;
+fn kexinit() -> Vec<u8> {
+    let cookie: [u8; 16] = codec::random::array();
     let mut writer = Vec::new();
     writer.byte(KEXINIT);
     for byte in cookie {
@@ -77,17 +75,14 @@ fn kexinit() -> Result<Vec<u8>> {
     }
     writer.boolean(false);
     writer.u32_be(0);
-    Ok(writer)
+    writer
 }
 
 /// A fresh ephemeral Curve25519 key pair: the secret and its public 32 bytes.
-fn ephemeral() -> Result<(StaticSecret, [u8; 32])> {
-    let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed)
-        .map_err(|_| protocol_error("the system would not draw a Curve25519 secret"))?;
-    let secret = StaticSecret::from(seed);
+fn ephemeral() -> (StaticSecret, [u8; 32]) {
+    let secret = StaticSecret::from(codec::random::array::<32>());
     let public = PublicKey::from(&secret);
-    Ok((secret, public.to_bytes()))
+    (secret, public.to_bytes())
 }
 
 /// The exchange hash of RFC 5656 section 4: the two identifications, the two
@@ -142,11 +137,11 @@ pub fn host_key_blob(verifying: &VerifyingKey) -> Vec<u8> {
 /// Where a message was out of order, the host signature did not verify, or
 /// the keys could not be derived.
 pub fn client(conn: &mut Conn, v_c: &str, v_s: &str) -> Result<Exchanged> {
-    let i_c = kexinit()?;
+    let i_c = kexinit();
     conn.send(&i_c)?;
     let i_s = conn.expect(KEXINIT, "the server's key-exchange offer")?;
 
-    let (secret, q_c) = ephemeral()?;
+    let (secret, q_c) = ephemeral();
     let mut init = Vec::new();
     init.byte(KEX_ECDH_INIT).string(&q_c);
     conn.send(&init)?;
@@ -188,14 +183,14 @@ pub fn client(conn: &mut Conn, v_c: &str, v_s: &str) -> Result<Exchanged> {
 /// # Errors
 /// Where a message was out of order or the keys could not be derived.
 pub fn server(conn: &mut Conn, host: &SigningKey, v_c: &str, v_s: &str) -> Result<Exchanged> {
-    let i_s = kexinit()?;
+    let i_s = kexinit();
     conn.send(&i_s)?;
     let i_c = conn.expect(KEXINIT, "the client's key-exchange offer")?;
 
     let init = conn.expect(KEX_ECDH_INIT, "the client's ephemeral key")?;
     let q_c = Cursor::new(&init[1..]).string()?.to_vec();
 
-    let (secret, q_s) = ephemeral()?;
+    let (secret, q_s) = ephemeral();
     let peer = <[u8; 32]>::try_from(q_c.as_slice())
         .map_err(|_| protocol_error("a client ephemeral key that is not 32 bytes"))?;
     let shared = secret.diffie_hellman(&PublicKey::from(peer));
@@ -260,15 +255,10 @@ fn verify_host(k_s: &[u8], sig_blob: &[u8], hash: &[u8]) -> Result<()> {
         .map_err(|_| protocol_error("a host signature that did not verify"))
 }
 
-/// A fresh Ed25519 key from the system's randomness.
-///
-/// # Errors
-/// Where the system would not draw a seed.
-pub fn fresh_ed25519() -> Result<SigningKey> {
-    let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed)
-        .map_err(|_| protocol_error("the system would not draw an Ed25519 key"))?;
-    Ok(SigningKey::from_bytes(&seed))
+/// A fresh Ed25519 key from the operating system's random source.
+#[must_use]
+pub fn fresh_ed25519() -> SigningKey {
+    SigningKey::from_bytes(&codec::random::array())
 }
 
 #[cfg(test)]
@@ -277,7 +267,7 @@ mod tests {
 
     #[test]
     fn the_offer_lists_one_name_on_every_axis() {
-        let payload = kexinit().expect("kexinit");
+        let payload = kexinit();
         assert_eq!(payload[0], KEXINIT);
         // byte, 16-byte cookie, then the first name-list is the kex algorithm.
         let mut reader = Cursor::new(&payload[17..]);
@@ -288,7 +278,7 @@ mod tests {
 
     #[test]
     fn a_host_signature_verifies_and_a_tampered_one_does_not() {
-        let host = fresh_ed25519().expect("host");
+        let host = fresh_ed25519();
         let hash = [0x11u8; 32];
         let blob = signature_blob(&host.sign(&hash));
         let k_s = host_key_blob(&host.verifying_key());
@@ -299,8 +289,8 @@ mod tests {
 
     #[test]
     fn the_shared_secret_encodes_the_same_mpint_on_both_sides() {
-        let (client_secret, client_public) = ephemeral().expect("client");
-        let (server_secret, server_public) = ephemeral().expect("server");
+        let (client_secret, client_public) = ephemeral();
+        let (server_secret, server_public) = ephemeral();
         let at_client = client_secret.diffie_hellman(&PublicKey::from(server_public));
         let at_server = server_secret.diffie_hellman(&PublicKey::from(client_public));
         assert_eq!(at_client.as_bytes(), at_server.as_bytes());

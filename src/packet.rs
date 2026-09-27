@@ -5,7 +5,7 @@
 //! over a connection, in the clear before the keys are exchanged and under
 //! a [`Cipher`] after.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpStream;
 
 use transport::error::{Result, classify, protocol_error};
@@ -62,20 +62,11 @@ impl Conn {
             .flush()
             .map_err(|error| classify("flushing our identification", &error))?;
         for _ in 0..64 {
-            let mut line = Vec::new();
-            let read = self
-                .reader
-                .read_until(b'\n', &mut line)
-                .map_err(|error| classify("reading the peer's identification", &error))?;
-            if read == 0 {
+            let Some(line) = net::read::line(&mut self.reader)? else {
                 break;
-            }
-            while matches!(line.last(), Some(b'\n' | b'\r')) {
-                line.pop();
-            }
-            if line.starts_with(b"SSH-") {
-                return String::from_utf8(line)
-                    .map_err(|_| protocol_error("an identification string that is not UTF-8"));
+            };
+            if line.starts_with("SSH-") {
+                return Ok(line);
             }
         }
         Err(protocol_error("a peer that sent no SSH identification"))
