@@ -54,7 +54,8 @@ pub use server::Served;
 use transport::error::Result;
 use transport::loopback::LOOPBACK_TIMEOUT;
 use transport::socket;
-use transport::{Arrived, Directions, NoNativeClaim, ResourceClaim, Transport};
+use transport::{Arrived, Configured, Directions, NoNativeClaim, ResourceClaim, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
 pub struct SftpTransport {
@@ -145,6 +146,45 @@ impl SftpTransport {
     }
 }
 
+impl Configured for SftpTransport {
+    /// The address is the server and directory, `sftp://host:22/dir`, or
+    /// `host:22` alone: where a Receive Location takes files from and a Send
+    /// Location puts them.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "user",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "The user the session authenticates as; `xmip` when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a peer that stops mid-exchange is waited on; unbounded when \
+                          left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    /// The password or the key comes through the Location's credentials,
+    /// not a setting.
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let mut transport = Self::new(address);
+        if let Some(user) = settings.optional_text("user") {
+            transport = transport.as_user(user);
+        }
+        if let Some(timeout) = settings.optional_duration("timeout") {
+            transport = transport.timing_out_after(timeout);
+        }
+        Ok(transport)
+    }
+}
+
 /// The last `/`-separated segment of `path`, the file's own name.
 fn last_segment(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -184,6 +224,26 @@ impl Transport for SftpTransport {
 mod tests {
     use super::*;
     use transport::loopback::Loopback;
+
+    #[test]
+    fn sftp_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(SftpTransport::SETTINGS.problems(), Vec::<String>::new());
+        let given = [
+            ("user".to_string(), Given::Text("courier".to_string())),
+            ("timeout".to_string(), Given::Text("2s".to_string())),
+        ];
+        let built =
+            SftpTransport::open("sftp://host:22/in", Applies::Receive, &given).expect("configured");
+        assert_eq!(built.authority(), "host:22");
+        assert_eq!(built.user, "courier");
+        assert_eq!(built.timeout, Some(Duration::from_secs(2)));
+        let password = [("password".to_string(), Given::Text("x".to_string()))];
+        let Err(refused) = SftpTransport::open("host:22", Applies::Send, &password) else {
+            panic!("a password is a credential, not a setting");
+        };
+        assert!(refused.message.contains("\"password\""), "{refused}");
+    }
 
     #[test]
     fn the_transport_names_itself_and_claims_without_locking() {
