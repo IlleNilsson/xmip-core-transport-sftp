@@ -8,7 +8,6 @@ use std::net::TcpListener;
 use ed25519_dalek::SigningKey;
 
 use context::property::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER};
-use transport::ceiling;
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, Loopback};
@@ -21,20 +20,6 @@ use crate::server::{self, Served};
 const PROBE: &str = "probe.bin";
 
 impl Loopback for SftpTransport {
-    fn ceiling(&self) -> Option<usize> {
-        Some(Self::CEILING)
-    }
-
-    fn refuses(&self, payload: &[u8]) -> Option<String> {
-        ceiling::within(
-            payload.len(),
-            Self::CEILING,
-            "the in-memory far end holds whole",
-        )
-        .err()
-        .map(|refused| refused.message)
-    }
-
     /// A bound SSH server waiting for its one client, serving one
     /// directory. Bound through the tcp carrier this transport is declared
     /// over.
@@ -97,7 +82,7 @@ mod tests {
     #[test]
     fn the_loopback_returns_the_edge_payloads_whole() {
         let transport = SftpTransport::loopback();
-        assert_eq!(transport.ceiling(), Some(SftpTransport::CEILING));
+        assert!(transport.ceiling().is_none());
         for (name, bytes) in edge_payloads() {
             assert!(transport.refuses(&bytes).is_none(), "{name}");
             let arrived = transport
@@ -108,12 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_over_the_ceiling_is_refused_with_its_reason() {
-        let transport = SftpTransport::loopback();
-        let over = vec![0u8; SftpTransport::CEILING + 1];
-        let why = transport.refuses(&over).expect("refused");
-        assert!(why.contains("over the"), "{why}");
-        assert!(why.contains("holds whole"), "{why}");
-        assert!(transport.unavailable().is_none());
+    fn the_loopback_stands_on_every_machine() {
+        assert!(SftpTransport::loopback().unavailable().is_none());
     }
 }

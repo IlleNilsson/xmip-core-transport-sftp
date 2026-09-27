@@ -59,8 +59,8 @@ mod tests {
 
     #[test]
     fn a_client_puts_a_file_and_the_far_end_keeps_it_with_the_peers_key() {
-        let host = kex::fresh_ed25519().expect("host");
-        let auth = kex::fresh_ed25519().expect("auth");
+        let host = kex::fresh_ed25519();
+        let auth = kex::fresh_ed25519();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("addr").to_string();
         let far = std::thread::spawn(move || {
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn a_client_harvests_a_populated_directory_and_leaves_it_empty() {
-        let host = kex::fresh_ed25519().expect("host");
+        let host = kex::fresh_ed25519();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("addr").to_string();
         let far = std::thread::spawn(move || {
@@ -123,8 +123,8 @@ mod tests {
 
     #[test]
     fn a_large_file_crosses_whole_through_many_write_chunks() {
-        let host = kex::fresh_ed25519().expect("host");
-        let auth = kex::fresh_ed25519().expect("auth");
+        let host = kex::fresh_ed25519();
+        let auth = kex::fresh_ed25519();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("addr").to_string();
         let far = std::thread::spawn(move || {

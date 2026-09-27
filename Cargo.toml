@@ -42,11 +42,14 @@ sha2 = "0.10"
 aes = "0.8"
 ctr = "0.9"
 hmac = "0.12"
-getrandom = "0.2"
-# The estate's encoding primitives: the byte cursor and writer, and a fingerprint in base 64.
+# The estate's encoding primitives: the byte cursor and writer, a fingerprint
+# in base 64, and the random bytes a cookie, padding and key are drawn from.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # The SSH wire types every message is built from: string, mpint, name-list.
 ssh = { package = "xmip-core-library-ssh", git = "https://github.com/IlleNilsson/xmip-core-library-ssh", branch = "main" }
+# The peer's identification line read under its ceiling (`net::read`), and
+# the most one file is read or held whole (`net::MAX_BODY`).
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test support

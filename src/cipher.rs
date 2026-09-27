@@ -59,7 +59,7 @@ pub fn plain() -> Box<dyn Cipher> {
 
 impl Cipher for Plain {
     fn seal(&mut self, _seq: u32, payload: &[u8]) -> Result<Vec<u8>> {
-        frame(payload, 8)
+        Ok(frame(payload, 8))
     }
 
     fn open(&mut self, _seq: u32, reader: &mut BufReader<TcpStream>) -> Result<Vec<u8>> {
@@ -91,7 +91,7 @@ impl AesCtrHmac {
 
 impl Cipher for AesCtrHmac {
     fn seal(&mut self, seq: u32, payload: &[u8]) -> Result<Vec<u8>> {
-        let mut packet = frame(payload, 16)?;
+        let mut packet = frame(payload, 16);
         let tag = self.mac(seq, &packet)?;
         self.cipher.apply_keystream(&mut packet);
         packet.extend_from_slice(&tag);
@@ -174,7 +174,7 @@ fn derive(k: &[u8], h: &[u8], letter: u8, session_id: &[u8], need: usize) -> Vec
 /// Wrap `payload` as `length | padding_length | payload | padding`, padded to
 /// a multiple of `block` with at least four bytes of padding (RFC 4253
 /// section 6).
-fn frame(payload: &[u8], block: usize) -> Result<Vec<u8>> {
+fn frame(payload: &[u8], block: usize) -> Vec<u8> {
     let base = 5 + payload.len();
     let mut padding = block - (base % block);
     if padding < 4 {
@@ -189,11 +189,10 @@ fn frame(payload: &[u8], block: usize) -> Result<Vec<u8>> {
     );
     out.push(u8::try_from(padding).unwrap_or(u8::MAX));
     out.extend_from_slice(payload);
-    let mut random = vec![0u8; padding];
-    getrandom::getrandom(&mut random)
-        .map_err(|_| protocol_error("the system would not draw padding"))?;
-    out.extend_from_slice(&random);
-    Ok(out)
+    let start = out.len();
+    out.resize(start + padding, 0);
+    codec::random::fill(&mut out[start..]);
+    out
 }
 
 /// The payload inside `packet`, which is `padding_length | payload | padding`
@@ -234,7 +233,7 @@ mod tests {
     #[test]
     fn a_frame_is_padded_to_the_block_and_reads_its_payload_back() {
         for block in [8usize, 16] {
-            let framed = frame(b"hello", block).expect("frame");
+            let framed = frame(b"hello", block);
             assert_eq!((framed.len()) % block, 0, "block {block}");
             let payload = unframe(&framed[4..]).expect("unframe");
             assert_eq!(payload, b"hello");

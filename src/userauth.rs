@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn a_public_key_request_verifies_against_its_own_key() {
-        let key = crate::kex::fresh_ed25519().expect("key");
+        let key = crate::kex::fresh_ed25519();
         let blob = host_key_blob(&key.verifying_key());
         let session = [0x5au8; 32];
         let signed = signed_data(&session, "xmip", &blob);
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn a_fingerprint_is_sha256_and_forty_three_base64_characters() {
-        let key = crate::kex::fresh_ed25519().expect("key");
+        let key = crate::kex::fresh_ed25519();
         let print = fingerprint(&host_key_blob(&key.verifying_key()));
         assert!(print.starts_with("SHA256:"), "{print}");
         assert_eq!(print.len() - "SHA256:".len(), 43, "{print}");

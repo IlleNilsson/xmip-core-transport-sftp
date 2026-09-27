@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
+use net::MAX_BODY;
 use ssh::{SshRead, SshWrite};
+use transport::ceiling;
 use transport::error::{Result, protocol_error};
 
 use crate::channel::Channel;
@@ -128,8 +130,11 @@ fn on_write(
             "a write to a handle not open for writing",
         ));
     };
-    let file = files.entry(name.clone()).or_default();
     let end = offset.saturating_add(data.len());
+    if let Err(refused) = ceiling::within(end, MAX_BODY, "Xmip holds of one file") {
+        return Ok(status(id, FAILURE, &refused.message));
+    }
+    let file = files.entry(name.clone()).or_default();
     if file.len() < end {
         file.resize(end, 0);
     }
@@ -247,6 +252,23 @@ mod tests {
             .string(b"hello world");
         answer(WRITE, &write, &mut files, &mut handles, &mut 1).expect("write");
         assert_eq!(files.get("probe.bin").expect("stored"), b"hello world");
+    }
+
+    #[test]
+    fn a_write_past_what_the_far_end_holds_is_refused_before_it_is_allocated() {
+        let mut files = Files::new();
+        let mut handles = BTreeMap::new();
+        let handle = open_write(&mut files, &mut handles);
+        let mut write = Vec::new();
+        write
+            .u32_be(2)
+            .string(handle.as_bytes())
+            .u64_be(u64::MAX - 4)
+            .string(b"hello");
+        let reply = answer(WRITE, &write, &mut files, &mut handles, &mut 1).expect("answered");
+        assert_eq!(reply[4], STATUS);
+        assert_eq!(code(&reply[5..]).expect("code"), FAILURE);
+        assert!(files.get("probe.bin").is_none_or(Vec::is_empty));
     }
 
     #[test]
