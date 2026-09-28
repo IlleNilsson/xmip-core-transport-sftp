@@ -8,15 +8,15 @@ use std::collections::BTreeMap;
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use net::MAX_BODY;
+use net::ceiling;
 use ssh::{SshRead, SshWrite};
-use transport::ceiling;
 use transport::error::{Result, protocol_error};
 
-use crate::channel::Channel;
 use crate::subsystem::{
     CLOSE, DATA, EOF, F_WRITE, FAILURE, Files, HANDLE, INIT, NAME, NO_SUCH_FILE, OK, OPEN, OPENDIR,
     PROTOCOL, READ, READDIR, REMOVE, STATUS, VERSION, WRITE, frame, utf8,
 };
+use ssh::channel::Channel;
 
 /// Serve the subsystem from `files` until the client closes the channel,
 /// answering every request it makes.

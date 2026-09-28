@@ -60,7 +60,7 @@ fn arrival(peer: &str, served: &Served) -> Result<Arrived> {
     if let Some(fingerprint) = &served.who.fingerprint {
         let _ = write!(origin, "&{SSH_KEY}={fingerprint}");
     }
-    if let Some(signature) = &served.who.signature {
+    if let (Some(signature), Some(signed)) = (&served.who.signature, &served.who.signed) {
         let _ = write!(
             origin,
             "&{SSH_SIGNATURE}={}",
@@ -69,7 +69,7 @@ fn arrival(peer: &str, served: &Served) -> Result<Arrived> {
         let _ = write!(
             origin,
             "&{SSH_SESSION}={}",
-            codec::base64::encode_unpadded(&served.session_id)
+            codec::base64::encode_unpadded(signed)
         );
     }
     Ok(Arrived::new(origin, bytes.clone()))
@@ -91,6 +91,28 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(arrived.bytes, bytes, "{name}");
         }
+    }
+
+    #[test]
+    fn the_arrival_carries_what_the_key_signed_and_it_verifies_under_that_key() {
+        let arrived = SftpTransport::loopback().round(b"signed").expect("round");
+        let query = arrived.origin_uri.split_once('?').expect("a query").1;
+        let field = |name: &str| {
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
+                .unwrap_or_else(|| panic!("no {name} in {query}"))
+        };
+        let signed = codec::base64::decode(field(SSH_SESSION)).expect("base64");
+        let signature = codec::base64::decode(field(SSH_SIGNATURE)).expect("base64");
+
+        let data = ssh::userauth::SignedData::read(&signed).expect("RFC 4252 signed data");
+        let key = ssh::key::PublicKey::parse(data.blob).expect("a key");
+
+        assert_eq!(data.user, field(SSH_USER));
+        assert_eq!(key.fingerprint().to_string(), field(SSH_KEY));
+        key.verify(&signed, &signature)
+            .expect("the signature covers it");
     }
 
     #[test]

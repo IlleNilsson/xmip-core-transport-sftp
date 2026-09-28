@@ -12,12 +12,13 @@ use ed25519_dalek::SigningKey;
 
 use transport::error::Result;
 
-use crate::channel::Channel;
+use ssh::channel::Channel;
+use ssh::kex;
+use ssh::packet::Conn;
+use ssh::userauth::{self, Authenticated};
+
 use crate::directory;
-use crate::kex;
-use crate::packet::Conn;
-use crate::subsystem::Files;
-use crate::userauth::{self, Authenticated};
+use crate::subsystem::{self, Files};
 
 /// What one served connection left behind: the files, and who the peer was.
 pub struct Served {
@@ -54,13 +55,13 @@ pub fn serve_channels(
     let peer = conn.banner(kex::IDENTIFICATION)?;
     let exchanged = kex::server(&mut conn, host, &peer, kex::IDENTIFICATION)?;
     let who = userauth::serve(&mut conn, &exchanged.session_id)?;
-    let mut channel = Channel::accept(&mut conn)?;
+    let mut channel = Channel::accept(&mut conn, subsystem::SUBSYSTEM)?;
     directory::serve(&mut channel, &mut files)?;
     channel.close()?;
     // A channel that does not open is the client gone: the connection ends
     // there, as the one before it did.
     for _ in 1..most {
-        let Ok(mut channel) = Channel::accept(&mut conn) else {
+        let Ok(mut channel) = Channel::accept(&mut conn, subsystem::SUBSYSTEM) else {
             break;
         };
         directory::serve(&mut channel, &mut files)?;
@@ -116,6 +117,7 @@ mod tests {
                 .who
                 .fingerprint
                 .expect("a key")
+                .to_string()
                 .starts_with("SHA256:")
         );
     }
