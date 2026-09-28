@@ -33,22 +33,16 @@ tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilss
 # The names the peer's key, user, signature and session travel under, which
 # the identity gates read (context::property).
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
-# The cryptography the SSH transport is built from: one key-exchange curve,
-# one host-key algorithm, and one cipher suite (aes256-ctr with
-# hmac-sha2-256). The binary framing is this crate's own.
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+# The key a Send Location authenticates with, and the far end's host key.
 ed25519-dalek = "2"
-sha2 = "0.10"
-aes = "0.8"
-ctr = "0.9"
-hmac = "0.12"
-# The estate's encoding primitives: the byte cursor and writer, a fingerprint
-# in base 64, and the random bytes a cookie, padding and key are drawn from.
+# The estate's encoding primitives: the byte cursor and writer the SFTP
+# packets are built from, and the base 64 a signature rides in.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
-# The SSH wire types every message is built from: string, mpint, name-list.
+# SSH: the wire types, the transport layer, user authentication and the
+# session channel the SFTP subsystem runs over.
 ssh = { package = "xmip-core-library-ssh", git = "https://github.com/IlleNilsson/xmip-core-library-ssh", branch = "main" }
-# The peer's identification line read under its ceiling (`net::read`), and
-# the most one file is read or held whole (`net::MAX_BODY`).
+# The most one file is read or held whole (`net::MAX_BODY`), and the one
+# refusal of a size over it (`net::ceiling`).
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 
 [dev-dependencies]

@@ -10,23 +10,29 @@
 //! SFTP protocol (draft-ietf-secsh-filexfer-02, version 3) opens, writes,
 //! reads, lists and removes files. A Send Location connects and puts a file
 //! into a directory; a Receive Location connects, lists a directory, takes
-//! each file and removes it.
+//! each file and removes it. Everything up to the subsystem is SSH, and is
+//! `xmip-core-library-ssh`'s; the SFTP protocol is this crate's.
 //!
 //! This transport is its own far end (ADR-0051): the [`Loopback`] far end is
 //! a minimal in-process SSH server that serves the subsystem from a directory
 //! held in memory, so one exchange runs both ways on this machine. It is a
 //! real handshake — Curve25519 key exchange, an Ed25519 host key, `aes256-ctr`
 //! with `hmac-sha2-256` — not a stub; what it is not is a general server, and
-//! it admits every credential rather than checking one, because a loopback is
-//! a counterparty and not a gatekeeper.
+//! it admits every well-formed credential rather than checking it against an
+//! authorized one, because a loopback is a counterparty and not a
+//! gatekeeper.
 //!
 //! Where the client authenticated by a public key, the far end promotes the
 //! peer onto the arrival for the identity gate that follows: the origin URI
 //! carries the key's fingerprint as `ssh.key`, the user as `ssh.user`, and the
-//! signature and session identifier as `ssh.signature` and `ssh.session` —
-//! the vocabulary `xmip-core-identify-ssh-key` and `-username` read, each
-//! name declared once in `context::property`. A password authentication
-//! carries only `ssh.user`.
+//! signature and the signed data it covers (RFC 4252 section 7, the session
+//! identifier first) as `ssh.signature` and `ssh.session` — the vocabulary
+//! `xmip-core-identify-ssh-key` and `-username` read, each name declared once
+//! in `context::property`, and what `xmip-core-authenticate-ssh-key` checks
+//! the signature over. Until 2026-09-28 `ssh.session` carried the session
+//! identifier alone, which no signature covers, so the gate could never
+//! verify a key an SFTP arrival presented. A password authentication carries
+//! only `ssh.user`.
 //!
 //! What is not here: only `aes256-ctr` with `hmac-sha2-256` is offered, so a
 //! peer that will speak nothing else cannot connect; there is no known-hosts
@@ -34,26 +40,21 @@
 //! ADR-0019 clause 8); and the subsystem holds each directory whole in
 //! memory, a file no larger than `net::MAX_BODY`.
 
-pub mod channel;
-pub mod cipher;
 pub mod client;
 pub mod directory;
-pub mod kex;
 mod loopback;
-pub mod packet;
 pub mod server;
 pub mod subsystem;
-pub mod userauth;
 
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 
 pub use client::{Client, Credential};
+use net::Target;
 pub use server::Served;
 use transport::error::Result;
 use transport::loopback::LOOPBACK_TIMEOUT;
-use transport::socket;
 use transport::{Arrived, Configured, Directions, NoNativeClaim, Pool, ResourceClaim, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
@@ -63,8 +64,8 @@ pub struct SftpTransport {
     user: String,
     credential: Credential,
     timeout: Option<Duration>,
-    /// The connections a send puts on, keys exchanged and authenticated
-    /// once per server and kept.
+    /// The connections a send puts on and a receive harvests on, keys
+    /// exchanged and authenticated once per server and kept.
     clients: Pool<Client>,
 }
 
@@ -126,14 +127,15 @@ impl SftpTransport {
 
     /// The authority `endpoint` names, or `endpoint` itself where it is bare.
     fn authority(&self) -> &str {
-        socket::target("sftp", &self.endpoint)
+        Target::under(&["sftp"], &self.endpoint)
+            .map(|named| (named.authority(), named.path()))
             .map_or(self.endpoint.as_str(), |(authority, _)| authority)
     }
 
     /// Where a target names the server and file — `sftp://host/dir/name` — or
     /// is a name alone on this transport's server.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match socket::target("sftp", target) {
+        match Target::under(&["sftp"], target).map(|named| (named.authority(), named.path())) {
             Some((authority, path)) => (authority, last_segment(path)),
             None => (self.authority(), target),
         }
@@ -198,11 +200,15 @@ impl Transport for SftpTransport {
         Directions::BOTH
     }
 
-    /// Every file in the directory, taken and removed. A scheduled pickup, so
-    /// the arrival carries no peer: the key in play was Xmip's own.
+    /// Every file in the directory, taken and removed, on the connection
+    /// kept for the server: keys exchanged and authenticated on the first
+    /// receive. A scheduled pickup, so the arrival carries no peer: the key
+    /// in play was Xmip's own.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let authority = self.authority().to_string();
-        let taken = self.connect(&authority)?.harvest()?;
+        let authority = self.authority();
+        let taken =
+            self.clients
+                .exchange(authority, || self.connect(authority), Client::harvest)?;
         Ok(taken
             .into_iter()
             .map(|(name, bytes)| Arrived::new(format!("sftp://{authority}/{name}"), bytes))
@@ -229,6 +235,7 @@ impl Transport for SftpTransport {
 mod tests {
     use super::*;
     use transport::loopback::Loopback;
+    use transport::socket;
 
     #[test]
     fn sftp_declares_its_settings_and_reads_through_them() {
@@ -301,6 +308,42 @@ mod tests {
             served[1].files.get("last.edi").expect("kept"),
             b"after the close"
         );
+    }
+
+    #[test]
+    fn a_hundred_receives_exchange_keys_once_and_a_connection_the_server_closed_is_replaced() {
+        // A hundred: each harvest is a channel of its own, which is SFTP's.
+        const RECEIVES: usize = 100;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        let far_end = std::thread::spawn(move || {
+            let host = SigningKey::from_bytes(&[0x5e; 32]);
+            for most in [RECEIVES, usize::MAX] {
+                let (stream, _) =
+                    socket::accept_tcp(&listener, Some(Duration::from_secs(5))).expect("accept");
+                let mut files = subsystem::Files::new();
+                files.insert("1.edi".to_string(), b"harvested".to_vec());
+                server::serve_channels(stream, &host, files, most).expect("served");
+            }
+        });
+        let near = SftpTransport::new(address).timing_out_after(Duration::from_secs(5));
+        let began = std::time::Instant::now();
+        let mut arrived = Vec::new();
+        for _ in 0..RECEIVES {
+            arrived.extend(near.receive().expect("harvested"));
+        }
+        let took = began.elapsed();
+        // Generous for a debug build under load: five milliseconds a harvest.
+        assert!(
+            took < Duration::from_millis(5 * RECEIVES as u64),
+            "{took:?}"
+        );
+        // One key exchange for every harvest: the file taken once.
+        assert_eq!(arrived.len(), 1);
+        assert_eq!(near.receive().expect("harvested again").len(), 1);
+        assert_eq!(near.clients.opened(), 2);
+        drop(near);
+        far_end.join().expect("far end");
     }
 
     #[test]

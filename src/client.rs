@@ -11,11 +11,12 @@ use transport::error::Result;
 use transport::pool::{Pooled, alive};
 use transport::socket;
 
-use crate::channel::Channel;
-use crate::kex;
-use crate::packet::Conn;
-use crate::subsystem::Sftp;
-use crate::userauth;
+use ssh::channel::Channel;
+use ssh::kex;
+use ssh::packet::Conn;
+use ssh::userauth;
+
+use crate::subsystem::{self, Sftp};
 
 /// How Xmip proves who it is to the far end.
 #[derive(Clone)]
@@ -71,8 +72,8 @@ impl Client {
     ///
     /// # Errors
     /// Where the channel, the subsystem or `work` failed.
-    pub fn with_subsystem<T>(&mut self, work: impl FnOnce(&mut Sftp) -> Result<T>) -> Result<T> {
-        let mut channel = Channel::open(&mut self.conn)?;
+    fn with_subsystem<T>(&mut self, work: impl FnOnce(&mut Sftp) -> Result<T>) -> Result<T> {
+        let mut channel = Channel::open(&mut self.conn, subsystem::SUBSYSTEM)?;
         let outcome = {
             let mut sftp = Sftp::start(&mut channel)?;
             work(&mut sftp)?

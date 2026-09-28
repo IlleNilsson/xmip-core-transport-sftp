@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use net::MAX_BODY;
+use net::ceiling;
 use ssh::{SshRead, SshWrite};
-use transport::ceiling;
 use transport::error::{Result, protocol_error};
 
-use crate::channel::Channel;
+use ssh::channel::Channel;
 
 pub(crate) const INIT: u8 = 1;
 pub(crate) const VERSION: u8 = 2;
@@ -39,6 +39,8 @@ pub(crate) const EOF: u32 = 1;
 pub(crate) const NO_SUCH_FILE: u32 = 2;
 pub(crate) const FAILURE: u32 = 4;
 
+/// The subsystem's name, which the channel asks for (RFC 4254 section 6.5).
+pub const SUBSYSTEM: &str = "sftp";
 /// The version this transport speaks.
 pub const PROTOCOL: u32 = 3;
 /// The most one read or write carries in a single request.
@@ -217,7 +219,7 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
     }
 
     fn send(&mut self, kind: u8, body: &[u8]) -> Result<()> {
-        self.channel.write(&frame(kind, body))
+        Ok(self.channel.write(&frame(kind, body))?)
     }
 
     fn recv(&mut self) -> Result<(u8, Vec<u8>)> {
