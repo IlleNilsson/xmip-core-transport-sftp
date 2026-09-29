@@ -137,7 +137,7 @@ mod tests {
         });
         let mut client = Client::connect(
             &address,
-            "partner",
+            "party",
             &Credential::Password("open".into()),
             Some(secs(5)),
         )
