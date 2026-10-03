@@ -9,8 +9,9 @@
 //! (RFC 4254) carries the `sftp` subsystem, and over that byte stream the
 //! SFTP protocol (draft-ietf-secsh-filexfer-02, version 3) opens, writes,
 //! reads, lists and removes files. A Send Location connects and puts a file
-//! into a directory; a Receive Location connects, lists a directory, takes
-//! each file and removes it. Everything up to the subsystem is SSH, and is
+//! into a directory; a Receive Location connects, lists a directory and hands
+//! each file back unread, read as the runtime asks and removed only when its
+//! receive cycle accepted it ([`connection`]). Everything up to the subsystem is SSH, and is
 //! `xmip-core-library-ssh`'s; the SFTP protocol is this crate's.
 //!
 //! This transport is its own far end (ADR-0051): the [`Loopback`] far end is
@@ -37,10 +38,11 @@
 //! What is not here: only `aes256-ctr` with `hmac-sha2-256` is offered, so a
 //! peer that will speak nothing else cannot connect; there is no known-hosts
 //! check, so the host key is taken as presented (an inferred identity,
-//! ADR-0019 clause 8); and the subsystem holds each directory whole in
-//! memory, a file no larger than `net::MAX_BODY`.
+//! ADR-0019 clause 8); and the far end's subsystem holds each directory
+//! whole in memory, a file no larger than `net::MAX_BODY`.
 
 pub mod client;
+pub mod connection;
 pub mod directory;
 mod loopback;
 pub mod server;
@@ -51,6 +53,7 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 
 pub use client::{Client, Credential};
+pub use connection::Connection;
 use net::Target;
 pub use server::Served;
 use transport::error::Result;
@@ -65,8 +68,9 @@ pub struct SftpTransport {
     credential: Credential,
     timeout: Option<Duration>,
     /// The connections a send puts on and a receive harvests on, keys
-    /// exchanged and authenticated once per server and kept.
-    clients: Pool<Client>,
+    /// exchanged and authenticated once per server and kept, lent to a
+    /// receive until its arrivals have their verdicts.
+    clients: Pool<Connection>,
 }
 
 impl SftpTransport {
@@ -200,19 +204,23 @@ impl Transport for SftpTransport {
         Directions::BOTH
     }
 
-    /// Every file in the directory, taken and removed, on the connection
-    /// kept for the server: keys exchanged and authenticated on the first
-    /// receive. A scheduled pickup, so the arrival carries no peer: the key
-    /// in play was Xmip's own.
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Ordered("a receive lists again what is not yet told")
+    }
+
+    /// Every file in the directory, listed on the connection kept for the
+    /// server — keys exchanged and authenticated on the first receive — and
+    /// handed back unread: each body is read a request at a time as the
+    /// runtime asks, `Accepted` and `Refused` remove the file, `Failed`
+    /// leaves it for the next receive ([`connection`]). A scheduled pickup, so the arrival
+    /// carries no peer: the key in play was Xmip's own.
     fn receive(&self) -> Result<Vec<Arrived>> {
         let authority = self.authority();
-        let taken =
-            self.clients
-                .exchange(authority, || self.connect(authority), Client::harvest)?;
-        Ok(taken
-            .into_iter()
-            .map(|(name, bytes)| Arrived::new(format!("sftp://{authority}/{name}"), bytes))
-            .collect())
+        self.clients.exchange(
+            authority,
+            || self.connect(authority).map(Connection::new),
+            |connection| connection.harvest(|name| format!("sftp://{authority}/{name}")),
+        )
     }
 
     /// Put the file on the connection kept for the server, keys exchanged
@@ -221,8 +229,8 @@ impl Transport for SftpTransport {
         let (address, name) = self.resolve(target);
         self.clients.exchange(
             address,
-            || self.connect(address),
-            |client| client.put(name, bytes),
+            || self.connect(address).map(Connection::new),
+            |connection| connection.with(|client| client.put(name, bytes)),
         )
     }
 
@@ -330,7 +338,9 @@ mod tests {
         let began = std::time::Instant::now();
         let mut arrived = Vec::new();
         for _ in 0..RECEIVES {
-            arrived.extend(near.receive().expect("harvested"));
+            for one in near.receive().expect("harvested") {
+                arrived.push(one.taken().expect("taken"));
+            }
         }
         let took = began.elapsed();
         // Generous for a debug build under load: five milliseconds a harvest.
@@ -340,10 +350,60 @@ mod tests {
         );
         // One key exchange for every harvest: the file taken once.
         assert_eq!(arrived.len(), 1);
+        assert_eq!(arrived[0].bytes, b"harvested");
         assert_eq!(near.receive().expect("harvested again").len(), 1);
         assert_eq!(near.clients.opened(), 2);
         drop(near);
         far_end.join().expect("far end");
+    }
+
+    #[test]
+    fn a_failed_file_stays_a_refused_one_is_removed_and_an_accepted_one_is_removed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        let far_end = std::thread::spawn(move || {
+            let host = SigningKey::from_bytes(&[0x5e; 32]);
+            let (stream, _) =
+                socket::accept_tcp(&listener, Some(Duration::from_secs(5))).expect("accept");
+            let mut files = subsystem::Files::new();
+            files.insert("a.edi".to_string(), b"first".to_vec());
+            files.insert("b.edi".to_string(), transport::payload::patterned(100_000));
+            server::serve(stream, &host, files).expect("served")
+        });
+        let near = SftpTransport::new(address).timing_out_after(Duration::from_secs(5));
+        let mut first = near.receive().expect("listed");
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(Arrived::defers));
+        // The first read through to its end and failed, the second refused
+        // unread.
+        let (_, mut body, acknowledgement) = first.remove(0).into_parts();
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut body, &mut read).expect("reading");
+        assert_eq!(read, b"first");
+        drop(body);
+        acknowledgement
+            .acknowledge(transport::Verdict::Failed)
+            .expect("failed");
+        first
+            .remove(0)
+            .refused(transport::Refusal::Unacceptable)
+            .expect("refused");
+
+        let again = near.receive().expect("listed again");
+        assert_eq!(again.len(), 1, "the failed file is listed again");
+        let taken = again
+            .into_iter()
+            .map(|one| one.taken().expect("taken"))
+            .collect::<Vec<_>>();
+        assert_eq!(taken[0].bytes, b"first");
+        assert!(near.receive().expect("listed once more").is_empty());
+        assert_eq!(near.clients.opened(), 1, "one connection for every receive");
+        drop(near);
+        let served = far_end.join().expect("far end");
+        assert!(
+            served.files.is_empty(),
+            "accepted and refused files are removed"
+        );
     }
 
     #[test]

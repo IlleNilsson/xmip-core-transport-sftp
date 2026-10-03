@@ -11,7 +11,8 @@ use context::property::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER};
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, Loopback};
-use transport::{Arrived, Pool, socket};
+use transport::taken::Taken;
+use transport::{Pool, socket};
 
 use crate::SftpTransport;
 use crate::server::{self, Served};
@@ -50,7 +51,7 @@ impl Loopback for SftpTransport {
 
 /// The one file the client put, as an arrival with the peer promoted onto its
 /// origin URI for the identity gate.
-fn arrival(peer: &str, served: &Served) -> Result<Arrived> {
+fn arrival(peer: &str, served: &Served) -> Result<Taken> {
     let (name, bytes) = served
         .files
         .iter()
@@ -72,7 +73,7 @@ fn arrival(peer: &str, served: &Served) -> Result<Arrived> {
             codec::base64::encode_unpadded(signed)
         );
     }
-    Ok(Arrived::new(origin, bytes.clone()))
+    Ok(Taken::new(origin, bytes.clone()))
 }
 
 #[cfg(test)]

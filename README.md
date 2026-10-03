@@ -25,6 +25,10 @@ A Send Location puts on an SSH connection whose keys are exchanged and whose use
 
 A Receive Location harvests on the same kept connection, a channel per harvest. Until 2026-09-28 every receive exchanged keys and authenticated.
 
+## Acknowledgement
+
+A file is consumed only after the runtime's whole receive cycle. A receive lists the directory over one channel and hands each file back unread; its body is read a `READ` request (32 KiB) at a time as the runtime asks, never whole in memory. `Accepted` removes the file (`SSH_FXP_REMOVE`). `Refused` removes it too: a directory has no place for a refused file, the runtime audited the refusal, and from Message creation on the Stream is kept in Xmip (ADR-0013); left, it would be listed and refused again on every receive. `Failed` leaves it, and the next receive lists it again. The channel stays open, held by one thread for the receive, until every arrival of it has its verdict (`transport::together`), so the reads and removes cost the round trips they did when a receive took and removed every file itself; the connection then goes back to the pool. A send that finds it lent to a receive opens a connection of its own. Until 2026-10-02 a receive read and removed every file before handing it back.
+
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls: scheme, authority, path and decoded query. Until 2026-09-28 it was read through the transport capability's `socket::target`, which split it on its first slash and left the query in the path.
 
 ## Toolchain

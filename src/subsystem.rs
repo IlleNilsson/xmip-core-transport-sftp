@@ -1,15 +1,13 @@
 //! The SFTP subsystem, version 3 (draft-ietf-secsh-filexfer-02): the client's
 //! requests — INIT, OPEN, WRITE, READ, CLOSE, OPENDIR, READDIR, REMOVE — and
 //! the wire vocabulary they share with the far end in [`crate::directory`].
-//! The client here is Xmip putting a file into a directory and taking files
-//! out of one.
+//! The client here is Xmip putting a file into a directory and reading files
+//! out of one, a request's worth at a time.
 
 use std::collections::BTreeMap;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
-use net::MAX_BODY;
-use net::ceiling;
 use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
@@ -100,35 +98,38 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         self.close(&handle)
     }
 
-    /// Take `name`'s bytes from the directory.
+    /// Open `name` for reading: the handle [`Self::read_at`] reads it by,
+    /// closed with [`Self::close`].
     ///
     /// # Errors
-    /// Where the file is not there or a read was refused.
-    pub fn get(&mut self, name: &str) -> Result<Vec<u8>> {
-        let handle = self.open(name, F_READ)?;
-        let mut bytes = Vec::new();
-        loop {
-            let mut read = Vec::new();
-            read.u32_be(self.id())
-                .string(handle.as_bytes())
-                .u64_be(bytes.len() as u64)
-                .u32_be(u32::try_from(CHUNK).unwrap_or(u32::MAX));
-            self.send(READ, &read)?;
-            let (kind, body) = self.recv()?;
-            match kind {
-                DATA => {
-                    let mut reader = Cursor::new(&body);
-                    let _id = reader.u32_be()?;
-                    bytes.extend_from_slice(reader.string()?);
-                    ceiling::within(bytes.len(), MAX_BODY, "Xmip reads of one file")?;
-                }
-                STATUS if code(&body)? == EOF => break,
-                STATUS => return Err(status_error(&body, "the read")),
-                _ => return Err(protocol_error("a reply that was neither data nor status")),
+    /// Where the file is not there.
+    pub fn open_for_reading(&mut self, name: &str) -> Result<String> {
+        self.open(name, F_READ)
+    }
+
+    /// The next chunk of the file `handle` names, from `offset`, at most
+    /// one request's worth; `None` at its end.
+    ///
+    /// # Errors
+    /// Where the read was refused or the reply was not data.
+    pub fn read_at(&mut self, handle: &str, offset: u64) -> Result<Option<Vec<u8>>> {
+        let mut read = Vec::new();
+        read.u32_be(self.id())
+            .string(handle.as_bytes())
+            .u64_be(offset)
+            .u32_be(u32::try_from(CHUNK).unwrap_or(u32::MAX));
+        self.send(READ, &read)?;
+        let (kind, body) = self.recv()?;
+        match kind {
+            DATA => {
+                let mut reader = Cursor::new(&body);
+                let _id = reader.u32_be()?;
+                Ok(Some(reader.string()?.to_vec()))
             }
+            STATUS if code(&body)? == EOF => Ok(None),
+            STATUS => Err(status_error(&body, "the read")),
+            _ => Err(protocol_error("a reply that was neither data nor status")),
         }
-        self.close(&handle)?;
-        Ok(bytes)
     }
 
     /// The names in the directory, `.` and `..` left out.
@@ -178,7 +179,11 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         self.expect_handle()
     }
 
-    fn close(&mut self, handle: &str) -> Result<()> {
+    /// Close the file or directory `handle` names.
+    ///
+    /// # Errors
+    /// Where the server refused.
+    pub fn close(&mut self, handle: &str) -> Result<()> {
         let mut close = Vec::new();
         close.u32_be(self.id()).string(handle.as_bytes());
         self.request(CLOSE, &close, "the close")
