@@ -1,7 +1,8 @@
 //! Xmip as the SSH client: connect, exchange the version and the keys,
 //! authenticate, and run the SFTP subsystem over one channel. A Send Location
-//! puts a file into a directory; a Receive Location lists the directory,
-//! takes each file and removes it.
+//! puts a file into a directory; a Receive Location lists the directory and
+//! reads each file, removing it once its receive cycle accepted it
+//! ([`crate::connection`]).
 
 use std::time::Duration;
 
@@ -72,7 +73,10 @@ impl Client {
     ///
     /// # Errors
     /// Where the channel, the subsystem or `work` failed.
-    fn with_subsystem<T>(&mut self, work: impl FnOnce(&mut Sftp) -> Result<T>) -> Result<T> {
+    pub(crate) fn with_subsystem<T>(
+        &mut self,
+        work: impl FnOnce(&mut Sftp) -> Result<T>,
+    ) -> Result<T> {
         let mut channel = Channel::open(&mut self.conn, subsystem::SUBSYSTEM)?;
         let outcome = {
             let mut sftp = Sftp::start(&mut channel)?;
@@ -88,22 +92,5 @@ impl Client {
     /// Where the subsystem refused the put.
     pub fn put(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         self.with_subsystem(|sftp| sftp.put(name, bytes))
-    }
-
-    /// Every file in the directory, each taken and removed, as a Receive
-    /// Location harvests a drop box.
-    ///
-    /// # Errors
-    /// Where the subsystem refused a listing, a read or a remove.
-    pub fn harvest(&mut self) -> Result<Vec<(String, Vec<u8>)>> {
-        self.with_subsystem(|sftp| {
-            let mut taken = Vec::new();
-            for name in sftp.list()? {
-                let bytes = sftp.get(&name)?;
-                sftp.remove(&name)?;
-                taken.push((name, bytes));
-            }
-            Ok(taken)
-        })
     }
 }

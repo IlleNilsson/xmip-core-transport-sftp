@@ -135,21 +135,23 @@ mod tests {
             files.insert("b.edi".to_string(), b"second".to_vec());
             serve(stream, &host, files)
         });
-        let mut client = Client::connect(
-            &address,
-            "party",
-            &Credential::Password("open".into()),
-            Some(secs(5)),
-        )
-        .expect("connect");
-        let mut taken = client.harvest().expect("harvest");
-        taken.sort();
+        let near = crate::SftpTransport::new(address.clone())
+            .as_user("party")
+            .with_password("open")
+            .timing_out_after(secs(5));
+        let mut taken = transport::Transport::receive(&near)
+            .expect("harvest")
+            .into_iter()
+            .map(|one| one.taken().expect("taken"))
+            .collect::<Vec<_>>();
+        taken.sort_by(|a, b| a.origin_uri.cmp(&b.origin_uri));
         // Hung up, so the far end stops waiting for another channel.
-        drop(client);
+        drop(near);
         let served = far.join().expect("thread").expect("served");
         assert_eq!(taken.len(), 2);
-        assert_eq!(taken[0], ("a.edi".to_string(), b"first".to_vec()));
-        assert_eq!(taken[1], ("b.edi".to_string(), b"second".to_vec()));
+        assert_eq!(taken[0].origin_uri, format!("sftp://{address}/a.edi"));
+        assert_eq!(taken[0].bytes, b"first");
+        assert_eq!(taken[1].bytes, b"second");
         assert!(served.files.is_empty(), "harvested files are removed");
         assert!(served.who.fingerprint.is_none(), "a password keeps no key");
     }
