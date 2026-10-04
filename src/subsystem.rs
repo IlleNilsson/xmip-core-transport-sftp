@@ -44,8 +44,29 @@ pub const PROTOCOL: u32 = 3;
 /// The most one read or write carries in a single request.
 const CHUNK: usize = 32_768;
 
+/// The attribute flags a listing's entries carry (section 5): the length,
+/// the owner, the permissions, the access and modification times, and
+/// extensions.
+pub(crate) const ATTR_SIZE: u32 = 0x0000_0001;
+const ATTR_UIDGID: u32 = 0x0000_0002;
+const ATTR_PERMISSIONS: u32 = 0x0000_0004;
+pub(crate) const ATTR_ACMODTIME: u32 = 0x0000_0008;
+const ATTR_EXTENDED: u32 = 0x8000_0000;
+
 /// A directory of files, name to bytes, as the far end holds it.
 pub type Files = BTreeMap<String, Vec<u8>>;
+
+/// What says a listed file is unchanged: its length and its modification
+/// time, in the seconds SFTP version 3 carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub length: u64,
+    pub modified: u32,
+}
+
+/// A listed file's name, with its stamp where the server gave both its
+/// length and its modification time.
+pub type Listed = (String, Option<Stamp>);
 
 /// The client's side of the subsystem over an open channel.
 pub struct Sftp<'a, 'conn> {
@@ -132,11 +153,12 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         }
     }
 
-    /// The names in the directory, `.` and `..` left out.
+    /// The files in the directory, each with its stamp, `.` and `..` left
+    /// out.
     ///
     /// # Errors
     /// Where the directory could not be opened or listed.
-    pub fn list(&mut self) -> Result<Vec<String>> {
+    pub fn list(&mut self) -> Result<Vec<Listed>> {
         let mut opendir = Vec::new();
         opendir.u32_be(self.id()).string(b".");
         self.send(OPENDIR, &opendir)?;
@@ -155,7 +177,7 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
             }
         }
         self.close(&handle)?;
-        names.retain(|name| name != "." && name != "..");
+        names.retain(|(name, _)| name != "." && name != "..");
         Ok(names)
     }
 
@@ -255,18 +277,49 @@ pub(crate) fn code(body: &[u8]) -> Result<u32> {
     Ok(reader.u32_be()?)
 }
 
-/// The names a NAME body carries.
-pub(crate) fn entries(body: &[u8]) -> Result<Vec<String>> {
+/// The names a NAME body carries, each with its stamp.
+pub(crate) fn entries(body: &[u8]) -> Result<Vec<Listed>> {
     let mut reader = Cursor::new(body);
     let _id = reader.u32_be()?;
     let count = reader.u32_be()?;
     let mut names = Vec::new();
     for _ in 0..count {
-        names.push(utf8(reader.string()?)?);
+        let name = utf8(reader.string()?)?;
         let _longname = reader.string()?;
-        let _attrs = reader.u32_be()?;
+        names.push((name, stamp(&mut reader)?));
     }
     Ok(names)
+}
+
+/// The stamp an entry's attributes give: its length and modification time
+/// where both are there, every other attribute read past.
+fn stamp(reader: &mut Cursor<'_>) -> Result<Option<Stamp>> {
+    let flags = reader.u32_be()?;
+    let length = if flags & ATTR_SIZE == 0 {
+        None
+    } else {
+        Some(reader.u64_be()?)
+    };
+    if flags & ATTR_UIDGID != 0 {
+        let _owner = (reader.u32_be()?, reader.u32_be()?);
+    }
+    if flags & ATTR_PERMISSIONS != 0 {
+        let _permissions = reader.u32_be()?;
+    }
+    let modified = if flags & ATTR_ACMODTIME == 0 {
+        None
+    } else {
+        let _accessed = reader.u32_be()?;
+        Some(reader.u32_be()?)
+    };
+    if flags & ATTR_EXTENDED != 0 {
+        for _ in 0..reader.u32_be()? {
+            let _pair = (reader.string()?, reader.string()?);
+        }
+    }
+    Ok(length
+        .zip(modified)
+        .map(|(length, modified)| Stamp { length, modified }))
 }
 
 fn status_error(body: &[u8], what: &str) -> transport::TransportError {
@@ -305,13 +358,36 @@ mod tests {
         status.u32_be(7).u32_be(EOF).string(b"done").string(b"");
         assert_eq!(code(&status).expect("code"), EOF);
         let mut name = Vec::new();
-        name.u32_be(1).u32_be(2);
-        for entry in ["one", "two"] {
-            name.string(entry.as_bytes())
-                .string(entry.as_bytes())
-                .u32_be(0);
-        }
-        assert_eq!(entries(&name).expect("names"), vec!["one", "two"]);
+        name.u32_be(1).u32_be(3);
+        name.string(b"one").string(b"one").u32_be(0);
+        name.string(b"two")
+            .string(b"two")
+            .u32_be(ATTR_SIZE | ATTR_UIDGID | ATTR_PERMISSIONS | ATTR_ACMODTIME)
+            .u64_be(5)
+            .u32_be(1)
+            .u32_be(2)
+            .u32_be(0o644)
+            .u32_be(7)
+            .u32_be(9);
+        name.string(b"three")
+            .string(b"three")
+            .u32_be(ATTR_SIZE | ATTR_EXTENDED)
+            .u64_be(1)
+            .u32_be(1)
+            .string(b"k")
+            .string(b"v");
+        let stamp = Stamp {
+            length: 5,
+            modified: 9,
+        };
+        assert_eq!(
+            entries(&name).expect("names"),
+            vec![
+                ("one".to_string(), None),
+                ("two".to_string(), Some(stamp)),
+                ("three".to_string(), None),
+            ]
+        );
     }
 
     #[test]
