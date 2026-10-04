@@ -11,8 +11,10 @@
 //! reads, lists and removes files. A Send Location connects and puts a file
 //! into a directory; a Receive Location connects, lists a directory and hands
 //! each file back unread, read as the runtime asks and removed only when its
-//! receive cycle accepted it ([`connection`]). Everything up to the subsystem is SSH, and is
-//! `xmip-core-library-ssh`'s; the SFTP protocol is this crate's.
+//! receive cycle accepted it ([`connection`]); a refused file is left where
+//! it lies and not received again while it is unchanged. Everything up to
+//! the subsystem is SSH, and is `xmip-core-library-ssh`'s; the SFTP protocol
+//! is this crate's.
 //!
 //! This transport is its own far end (ADR-0051): the [`Loopback`] far end is
 //! a minimal in-process SSH server that serves the subsystem from a directory
@@ -56,9 +58,12 @@ pub use client::{Client, Credential};
 pub use connection::Connection;
 use net::Target;
 pub use server::Served;
+pub use subsystem::Stamp;
 use transport::error::Result;
 use transport::loopback::LOOPBACK_TIMEOUT;
-use transport::{Arrived, Configured, Directions, NoNativeClaim, Pool, ResourceClaim, Transport};
+use transport::{
+    Arrived, Configured, Directions, NoNativeClaim, Pool, Refused, ResourceClaim, Transport,
+};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
@@ -71,6 +76,10 @@ pub struct SftpTransport {
     /// exchanged and authenticated once per server and kept, lent to a
     /// receive until its arrivals have their verdicts.
     clients: Pool<Connection>,
+    /// The files this Location refused and left where they lie, each with
+    /// its stamp; the node process's, so a node started again receives
+    /// them once more.
+    refused: Refused<String, Stamp>,
 }
 
 impl SftpTransport {
@@ -89,6 +98,7 @@ impl SftpTransport {
             credential: Credential::Password("xmip".to_string()),
             timeout: None,
             clients: Pool::new(),
+            refused: Refused::default(),
         }
     }
 
@@ -211,15 +221,18 @@ impl Transport for SftpTransport {
     /// Every file in the directory, listed on the connection kept for the
     /// server — keys exchanged and authenticated on the first receive — and
     /// handed back unread: each body is read a request at a time as the
-    /// runtime asks, `Accepted` and `Refused` remove the file, `Failed`
-    /// leaves it for the next receive ([`connection`]). A scheduled pickup, so the arrival
-    /// carries no peer: the key in play was Xmip's own.
+    /// runtime asks, `Accepted` removes the file, `Refused` leaves it and
+    /// it is not listed again while its length and modification time stay
+    /// as they were, `Failed` leaves it for the next receive
+    /// ([`connection`]). A scheduled pickup, so the arrival carries no peer:
+    /// the key in play was Xmip's own.
     fn receive(&self) -> Result<Vec<Arrived>> {
         let authority = self.authority();
+        let origin = |name: &str| format!("sftp://{authority}/{name}");
         self.clients.exchange(
             authority,
             || self.connect(authority).map(Connection::new),
-            |connection| connection.harvest(|name| format!("sftp://{authority}/{name}")),
+            |connection| connection.harvest(origin, &self.refused),
         )
     }
 
@@ -358,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_file_stays_a_refused_one_is_removed_and_an_accepted_one_is_removed() {
+    fn a_failed_file_stays_a_refused_one_stays_unlisted_and_an_accepted_one_is_removed() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("address").to_string();
         let far_end = std::thread::spawn(move || {
@@ -390,19 +403,35 @@ mod tests {
             .expect("refused");
 
         let again = near.receive().expect("listed again");
-        assert_eq!(again.len(), 1, "the failed file is listed again");
+        assert_eq!(again.len(), 1, "the failed file, not the refused one");
+        assert!(again[0].origin_uri.ends_with("/a.edi"));
         let taken = again
             .into_iter()
             .map(|one| one.taken().expect("taken"))
             .collect::<Vec<_>>();
         assert_eq!(taken[0].bytes, b"first");
         assert!(near.receive().expect("listed once more").is_empty());
+
+        // Written again, the refused file is a new arrival.
+        near.send("b.edi", b"written again").expect("put");
+        let rewritten = near.receive().expect("listed after the write");
+        assert_eq!(rewritten.len(), 1);
+        let rewritten = rewritten.into_iter().next().expect("one");
+        assert!(rewritten.origin_uri.ends_with("/b.edi"));
+        rewritten
+            .refused(transport::Refusal::Unacceptable)
+            .expect("refused again");
+        assert!(near.receive().expect("listed at last").is_empty());
         assert_eq!(near.clients.opened(), 1, "one connection for every receive");
         drop(near);
         let served = far_end.join().expect("far end");
-        assert!(
-            served.files.is_empty(),
-            "accepted and refused files are removed"
+        assert_eq!(served.files.len(), 1, "the accepted file is removed");
+        assert_eq!(
+            served
+                .files
+                .get("b.edi")
+                .expect("the refused file lies there"),
+            b"written again"
         );
     }
 

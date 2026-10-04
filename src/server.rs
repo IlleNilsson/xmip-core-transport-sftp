@@ -48,15 +48,16 @@ pub fn serve(stream: TcpStream, host: &SigningKey, files: Files) -> Result<Serve
 pub fn serve_channels(
     stream: TcpStream,
     host: &SigningKey,
-    mut files: Files,
+    files: Files,
     most: usize,
 ) -> Result<Served> {
+    let mut held = directory::Directory::new(files);
     let mut conn = Conn::new(stream)?;
     let peer = conn.banner(kex::IDENTIFICATION)?;
     let exchanged = kex::server(&mut conn, host, &peer, kex::IDENTIFICATION)?;
     let who = userauth::serve(&mut conn, &exchanged.session_id)?;
     let mut channel = Channel::accept(&mut conn, subsystem::SUBSYSTEM)?;
-    directory::serve(&mut channel, &mut files)?;
+    directory::serve(&mut channel, &mut held)?;
     channel.close()?;
     // A channel that does not open is the client gone: the connection ends
     // there, as the one before it did.
@@ -64,11 +65,11 @@ pub fn serve_channels(
         let Ok(mut channel) = Channel::accept(&mut conn, subsystem::SUBSYSTEM) else {
             break;
         };
-        directory::serve(&mut channel, &mut files)?;
+        directory::serve(&mut channel, &mut held)?;
         channel.close()?;
     }
     Ok(Served {
-        files,
+        files: held.files,
         who,
         session_id: exchanged.session_id,
     })

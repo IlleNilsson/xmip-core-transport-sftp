@@ -6,7 +6,9 @@
 //! its verdict: its body reads the file a request's worth at a time (`READ`)
 //! as the runtime asks, and its acknowledgement removes it (`REMOVE`) on
 //! `Accepted` — the same channel, so no round trip is added to what the
-//! receive did when it took and removed every file itself. The library's
+//! receive did when it took and removed every file itself. A refused file is
+//! left where it lies and remembered with its stamp, and the listing leaves
+//! it out while it lies so (`transport::Refused`). The library's
 //! channel borrows its connection, so the channel is held by one thread for
 //! the receive — the harvest — and the arrivals ask it, a chunk at a time
 //! through a channel of one; it ends, and the connection goes back to the
@@ -20,10 +22,10 @@ use transport::body::chunked;
 use transport::error::{Result, TransportError, protocol_error};
 use transport::pool::Pooled;
 use transport::together::together;
-use transport::{Acknowledgement, Arrived, Verdict};
+use transport::{Acknowledgement, Arrived, Refused, Verdict};
 
 use crate::client::Client;
-use crate::subsystem::Sftp;
+use crate::subsystem::{Listed, Sftp, Stamp};
 
 /// Where the client is.
 enum Line {
@@ -52,8 +54,8 @@ enum Request {
 
 /// How a harvest's channel ended.
 enum Ended {
-    /// Nothing was listed.
-    Empty(Vec<String>),
+    /// Nothing was listed, or nothing but what lies refused.
+    Empty(Vec<Listed>),
     /// The arrivals were answered; the last asked to be told when the
     /// client is back.
     Answered(Option<SyncSender<()>>),
@@ -86,11 +88,16 @@ impl Connection {
 
     /// List the directory on a channel of its own, and hand back each file
     /// as an arrival read and removed over that channel: `origin` makes its
-    /// origin from its name.
+    /// origin from its name. A file `refused` holds as it lies is left out;
+    /// one the cycle refuses is left and remembered there.
     ///
     /// # Errors
     /// Where the client is lent or broken, or the listing failed.
-    pub fn harvest(&self, origin: impl Fn(&str) -> String) -> Result<Vec<Arrived>> {
+    pub fn harvest(
+        &self,
+        origin: impl Fn(&str) -> String,
+        refused: &Refused<String, Stamp>,
+    ) -> Result<Vec<Arrived>> {
         let lent = std::mem::replace(&mut *self.line(), Line::Harvesting);
         let client = match lent {
             Line::Here(client) => client,
@@ -102,9 +109,10 @@ impl Connection {
         let (listed, names) = sync_channel(1);
         let (asking, requests) = channel();
         let line = Arc::clone(&self.0);
+        let sifting = refused.clone();
         std::thread::Builder::new()
             .name("sftp-harvest".to_string())
-            .spawn(move || harvesting(client, &line, &listed, &requests))
+            .spawn(move || harvesting(client, &line, &sifting, &listed, &requests))
             .map_err(|e| transport::error::classify("starting a harvest", &e))?;
         let names = names
             .recv()
@@ -112,16 +120,17 @@ impl Connection {
         if names.is_empty() {
             return Ok(Vec::new());
         }
-        let (removing, finishing, listed) = (asking.clone(), asking.clone(), names.clone());
+        let listed: Vec<String> = names.iter().map(|(name, _)| name.clone()).collect();
+        let (removing, finishing) = (asking.clone(), asking.clone());
         // The last verdict, or the last let go without one, ends the
         // harvest and waits until the client is back, so the receive after
         // finds it (`transport::together`).
         let acknowledgements = together(
             names.len(),
             move |at, verdict| match verdict {
-                // A directory has no place for a refused file: removed too.
-                Verdict::Accepted | Verdict::Refused(_) => remove(&removing, &listed[at]),
-                Verdict::Failed => Ok(()),
+                Verdict::Accepted => remove(&removing, &listed[at]),
+                // A refusal is not a consumption: the file is the only copy.
+                Verdict::Refused(_) | Verdict::Failed => Ok(()),
             },
             move |_| {
                 finish(&finishing);
@@ -131,7 +140,14 @@ impl Connection {
         Ok(names
             .into_iter()
             .zip(acknowledgements)
-            .map(|(name, acknowledgement)| arrival(origin(&name), name, &asking, acknowledgement))
+            .map(|((name, stamp), told)| {
+                // Without a stamp it cannot be known unchanged: listed again.
+                let told = match stamp {
+                    Some(stamp) => refused.remembering(name.clone(), stamp, told),
+                    None => told,
+                };
+                arrival(origin(&name), name, &asking, told)
+            })
             .collect())
     }
 }
@@ -148,18 +164,20 @@ impl Pooled for Connection {
     }
 }
 
-/// The harvest's thread: list, answer the arrivals until the last is let
-/// go, close the channel, and give the client back. An empty listing, and
+/// The harvest's thread: list, leave out what lies refused, answer the
+/// arrivals until the last is let go, close the channel, and give the
+/// client back. An empty listing, and
 /// the last arrival's finish, are answered once the client is back, so the
 /// next receive finds it.
 fn harvesting(
     mut client: Client,
     line: &Mutex<Line>,
-    listed: &SyncSender<Result<Vec<String>>>,
+    refused: &Refused<String, Stamp>,
+    listed: &SyncSender<Result<Vec<Listed>>>,
     requests: &Receiver<Request>,
 ) {
     let harvested = client.with_subsystem(|sftp| {
-        let names = sftp.list()?;
+        let names = refused.sift(sftp.list()?, |(name, _)| name, |(_, stamp)| *stamp);
         if names.is_empty() {
             return Ok(Ended::Empty(names));
         }

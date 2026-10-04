@@ -44,6 +44,7 @@ impl Loopback for SftpTransport {
             credential: self.credential.clone(),
             timeout: self.timeout,
             clients: Pool::new(),
+            refused: self.refused.clone(),
         };
         near.connect(address)?.put(PROBE, payload)
     }
