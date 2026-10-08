@@ -3,11 +3,12 @@
 //! the arrival with the peer promoted onto it.
 
 use std::fmt::Write as _;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 
 use ed25519_dalek::SigningKey;
 
 use context::property::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER};
+use transport::ArrivalIdentity;
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, Loopback};
@@ -21,6 +22,10 @@ use crate::server::{self, Served};
 const PROBE: &str = "probe.bin";
 
 impl Loopback for SftpTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Named(&[SSH_USER, SSH_KEY])
+    }
+
     /// A bound SSH server waiting for its one client, serving one
     /// directory. Bound through the tcp carrier this transport is declared
     /// over.
@@ -31,7 +36,7 @@ impl Loopback for SftpTransport {
             move |listener: &TcpListener| {
                 let (stream, peer) = socket::accept_tcp(listener, timeout)?;
                 let served = server::serve(stream, &host, crate::subsystem::Files::new())?;
-                arrival(&peer.to_string(), &served)
+                arrival(peer, &served)
             },
             tcp::TcpTransport::new(self.authority()).bind()?,
         )))
@@ -52,15 +57,17 @@ impl Loopback for SftpTransport {
 
 /// The one file the client put, as an arrival with the peer promoted onto its
 /// origin URI for the identity gate.
-fn arrival(peer: &str, served: &Served) -> Result<Taken> {
+fn arrival(peer: SocketAddr, served: &Served) -> Result<Taken> {
     let (name, bytes) = served
         .files
         .iter()
         .next()
         .ok_or_else(|| protocol_error("a client that connected and put nothing"))?;
     let mut origin = format!("sftp://{peer}/{name}?{SSH_USER}={}", served.who.user);
+    let mut observed = vec![(SSH_USER.to_string(), served.who.user.clone())];
     if let Some(fingerprint) = &served.who.fingerprint {
         let _ = write!(origin, "&{SSH_KEY}={fingerprint}");
+        observed.push((SSH_KEY.to_string(), fingerprint.to_string()));
     }
     if let (Some(signature), Some(signed)) = (&served.who.signature, &served.who.signed) {
         let _ = write!(
@@ -74,7 +81,9 @@ fn arrival(peer: &str, served: &Served) -> Result<Taken> {
             codec::base64::encode_unpadded(signed)
         );
     }
-    Ok(Taken::new(origin, bytes.clone()))
+    let mut taken = Taken::new(origin, bytes.clone()).from_peer(peer);
+    taken.observed.extend(observed);
+    Ok(taken)
 }
 
 #[cfg(test)]

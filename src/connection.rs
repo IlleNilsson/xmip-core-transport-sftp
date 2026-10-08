@@ -295,7 +295,7 @@ fn arrival(
         name,
         chunks: None,
     };
-    Arrived::new(origin, chunked(move || fetch.next_chunk()), acknowledgement)
+    Arrived::new(origin, chunked(move || fetch.next_chunk()), acknowledgement).detected()
 }
 
 /// One file's body: asked of the harvest on the first read, a chunk at a
