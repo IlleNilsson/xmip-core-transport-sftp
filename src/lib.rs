@@ -218,6 +218,10 @@ impl Transport for SftpTransport {
         transport::Arrivals::Ordered("a receive lists again what is not yet told")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a receive lists the directory and returns")
+    }
+
     /// Every file in the directory, listed on the connection kept for the
     /// server — keys exchanged and authenticated on the first receive — and
     /// handed back unread: each body is read a request at a time as the
