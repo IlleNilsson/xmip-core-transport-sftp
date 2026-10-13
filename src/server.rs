@@ -1,15 +1,18 @@
 //! The in-process far end: a minimal SSH server that offers the `sftp`
 //! subsystem over a directory held in memory, so the transport is both ends
 //! of one exchange on this machine (ADR-0051). It is not a general SSH
-//! server — one connection, one channel at a time, one directory, every
+//! server — one channel at a time per connection, one directory, every
 //! credential admitted — which is all a loopback and the Playground need.
 //! A client that keeps its connection opens a channel per file, and each is
-//! served in turn until the client hangs up.
+//! served in turn until the client hangs up; [`serving`] serves every
+//! client a listener accepts at once, over one shared directory.
 
 use std::net::TcpStream;
+use std::sync::{Mutex, PoisonError};
 
 use ed25519_dalek::SigningKey;
 
+use transport::concurrent::Concurrent;
 use transport::error::Result;
 
 use ssh::channel::Channel;
@@ -51,13 +54,37 @@ pub fn serve_channels(
     files: Files,
     most: usize,
 ) -> Result<Served> {
-    let mut held = directory::Directory::new(files);
+    let held = Mutex::new(directory::Directory::new(files));
+    let (who, session_id) = serve_directory(stream, host, &held, most)?;
+    Ok(Served {
+        files: held
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .files,
+        who,
+        session_id,
+    })
+}
+
+/// Serve one connection on `stream` over `held`, a directory other
+/// connections may be serving at the same time: its channels one after
+/// another, at most `most`, until the client hangs up. Who authenticated,
+/// and the session identifier.
+///
+/// # Errors
+/// As [`serve`].
+pub fn serve_directory(
+    stream: TcpStream,
+    host: &SigningKey,
+    held: &Mutex<directory::Directory>,
+    most: usize,
+) -> Result<(Authenticated, Vec<u8>)> {
     let mut conn = Conn::new(stream)?;
     let peer = conn.banner(kex::IDENTIFICATION)?;
     let exchanged = kex::server(&mut conn, host, &peer, kex::IDENTIFICATION)?;
     let who = userauth::serve(&mut conn, &exchanged.session_id)?;
     let mut channel = Channel::accept(&mut conn, subsystem::SUBSYSTEM)?;
-    directory::serve(&mut channel, &mut held)?;
+    directory::serve(&mut channel, held)?;
     channel.close()?;
     // A channel that does not open is the client gone: the connection ends
     // there, as the one before it did.
@@ -65,13 +92,29 @@ pub fn serve_channels(
         let Ok(mut channel) = Channel::accept(&mut conn, subsystem::SUBSYSTEM) else {
             break;
         };
-        directory::serve(&mut channel, &mut held)?;
+        directory::serve(&mut channel, held)?;
         channel.close()?;
     }
-    Ok(Served {
-        files: held.files,
-        who,
-        session_id: exchanged.session_id,
+    Ok((who, exchanged.session_id))
+}
+
+/// Serve every client `listener` accepts at once over `shared`, signing as
+/// `host`, each read given up after `timeout`: one server several
+/// receiving nodes race at (ADR-0024, amendment 2026-10-13). Dropped, it
+/// stops accepting.
+///
+/// # Errors
+/// Where the listener's address could not be read.
+pub fn serving(
+    listener: std::net::TcpListener,
+    host: SigningKey,
+    shared: directory::Shared,
+    timeout: Option<std::time::Duration>,
+) -> Result<Concurrent> {
+    Concurrent::start(listener, "sftp-session", move |stream| {
+        if transport::socket::settle(&stream, timeout).is_ok() {
+            let _ = serve_directory(stream, &host, &shared, usize::MAX);
+        }
     })
 }
 
@@ -140,6 +183,11 @@ mod tests {
             .as_user("party")
             .with_password("open")
             .timing_out_after(secs(5));
+        let found = transport::Transport::receive(&near).expect("found");
+        assert!(
+            found.is_empty(),
+            "taken by the listing after the one that found it"
+        );
         let mut taken = transport::Transport::receive(&near)
             .expect("harvest")
             .into_iter()

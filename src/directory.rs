@@ -2,9 +2,15 @@
 //! to whatever the client asks of it (draft-ietf-secsh-filexfer-02). Not a
 //! file system — a `BTreeMap` of names to bytes, and when each was written —
 //! which is all a loopback and the Playground need to be their own
-//! counterparty (ADR-0051).
+//! counterparty (ADR-0051). Several connections may serve one directory at
+//! once ([`Shared`]); each request is answered whole under its lock, as a
+//! file system makes each of its own. What the claim leans on is kept
+//! (ADR-0024, amendment 2026-10-13): an open with `EXCL` of a name that
+//! exists is refused, a rename onto a name that exists is refused, as
+//! version 3 says, and a rename keeps the file's modification time.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codec::cursor::Cursor;
@@ -15,11 +21,14 @@ use ssh::{SshRead, SshWrite};
 use transport::error::{Result, protocol_error};
 
 use crate::subsystem::{
-    ATTR_ACMODTIME, ATTR_SIZE, CLOSE, DATA, EOF, F_WRITE, FAILURE, Files, HANDLE, INIT, NAME,
-    NO_SUCH_FILE, OK, OPEN, OPENDIR, PROTOCOL, READ, READDIR, REMOVE, STATUS, VERSION, WRITE,
-    frame, utf8,
+    ATTR_ACMODTIME, ATTR_SIZE, ATTRS, CLOSE, DATA, EOF, F_EXCL, F_TRUNC, F_WRITE, FAILURE, Files,
+    HANDLE, INIT, NAME, NO_SUCH_FILE, OK, OPEN, OPENDIR, PROTOCOL, READ, READDIR, REMOVE, RENAME,
+    STAT, STATUS, VERSION, WRITE, frame, utf8,
 };
 use ssh::channel::Channel;
+
+/// One directory several connections serve at once.
+pub type Shared = Arc<Mutex<Directory>>;
 
 /// The directory the far end serves: its files, and when each was last
 /// written, the modification time a listing gives beside its length.
@@ -61,18 +70,22 @@ impl Directory {
 }
 
 /// Serve the subsystem from `directory` until the client closes the
-/// channel, answering every request it makes.
+/// channel, answering every request it makes, each under the directory's
+/// lock.
 ///
 /// # Errors
 /// Where a request was malformed or the socket failed.
-pub fn serve(channel: &mut Channel<'_>, directory: &mut Directory) -> Result<()> {
+pub fn serve(channel: &mut Channel<'_>, directory: &Mutex<Directory>) -> Result<()> {
     let mut handles: BTreeMap<String, Handle> = BTreeMap::new();
     let mut next = 0u64;
     while let Some(body) = channel.read_frame()? {
         let (kind, rest) = body
             .split_first()
             .ok_or_else(|| protocol_error("an SFTP packet with no type"))?;
-        let reply = answer(*kind, rest, directory, &mut handles, &mut next)?;
+        let reply = {
+            let mut held = directory.lock().unwrap_or_else(PoisonError::into_inner);
+            answer(*kind, rest, &mut held, &mut handles, &mut next)?
+        };
         channel.write(&reply)?;
     }
     Ok(())
@@ -129,8 +142,45 @@ fn answer(
                 Ok(status(id, NO_SUCH_FILE, "no such file"))
             }
         }
+        RENAME => on_rename(&mut reader, directory),
+        STAT => {
+            let id = reader.u32_be()?;
+            let name = utf8(reader.string()?)?;
+            Ok(match directory.files.get(&name) {
+                Some(bytes) => {
+                    let modified = directory.modified(&name);
+                    let mut body = Vec::new();
+                    body.u32_be(id)
+                        .u32_be(ATTR_SIZE | ATTR_ACMODTIME)
+                        .u64_be(bytes.len() as u64)
+                        .u32_be(modified)
+                        .u32_be(modified);
+                    frame(ATTRS, &body)
+                }
+                None => status(id, NO_SUCH_FILE, "no such file"),
+            })
+        }
         other => Err(protocol_error(format!("an SFTP request of type {other}"))),
     }
+}
+
+/// Rename a file, keeping when it was written; refused onto a name that
+/// exists, as version 3 says.
+fn on_rename(reader: &mut Cursor<'_>, directory: &mut Directory) -> Result<Vec<u8>> {
+    let id = reader.u32_be()?;
+    let from = utf8(reader.string()?)?;
+    let to = utf8(reader.string()?)?;
+    if directory.files.contains_key(&to) {
+        return Ok(status(id, FAILURE, "the new name exists"));
+    }
+    let Some(bytes) = directory.files.remove(&from) else {
+        return Ok(status(id, NO_SUCH_FILE, "no such file"));
+    };
+    directory.files.insert(to.clone(), bytes);
+    if let Some(written) = directory.written.remove(&from) {
+        directory.written.insert(to, written);
+    }
+    Ok(status(id, OK, "renamed"))
 }
 
 /// Open a file: for writing it is created empty, for reading it must exist.
@@ -146,7 +196,13 @@ fn on_open(
     let handle = format!("h{next}");
     *next += 1;
     if flags & F_WRITE != 0 {
-        directory.files.insert(name.clone(), Vec::new());
+        let exists = directory.files.contains_key(&name);
+        if exists && flags & F_EXCL != 0 {
+            return Ok(status(id, FAILURE, "the file exists"));
+        }
+        if !exists || flags & F_TRUNC != 0 {
+            directory.files.insert(name.clone(), Vec::new());
+        }
         directory.touch(&name);
         handles.insert(handle.clone(), Handle::Write(name));
     } else if directory.files.contains_key(&name) {
