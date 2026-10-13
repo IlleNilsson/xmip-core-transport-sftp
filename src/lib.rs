@@ -48,6 +48,7 @@ pub mod connection;
 pub mod directory;
 mod loopback;
 pub mod server;
+pub mod site;
 pub mod subsystem;
 
 use std::time::Duration;
@@ -57,13 +58,13 @@ use ed25519_dalek::SigningKey;
 pub use client::{Client, Credential};
 pub use connection::Connection;
 use net::Target;
-pub use server::Served;
+pub use server::{Served, serving};
+pub use site::SftpSite;
 pub use subsystem::Stamp;
+use transport::claim::{Claimant, Claiming, Held, Site, Sited};
 use transport::error::Result;
 use transport::loopback::LOOPBACK_TIMEOUT;
-use transport::{
-    Arrived, Configured, Directions, NoNativeClaim, Pool, Refused, ResourceClaim, Transport,
-};
+use transport::{Arrived, Configured, Directions, NodeLocation, Pool, ResourceClaim, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
@@ -76,10 +77,10 @@ pub struct SftpTransport {
     /// exchanged and authenticated once per server and kept, lent to a
     /// receive until its arrivals have their verdicts.
     clients: Pool<Connection>,
-    /// The files this Location refused and left where they lie, each with
-    /// its stamp; the node process's, so a node started again receives
-    /// them once more.
-    refused: Refused<String, Stamp>,
+    /// The claims made here, the stability check's memory, the files this
+    /// Location refused — the node process's, so a node started again
+    /// receives them once more — and those waiting to go back.
+    claiming: Claiming<Stamp>,
 }
 
 impl SftpTransport {
@@ -98,8 +99,15 @@ impl SftpTransport {
             credential: Credential::Password("xmip".to_string()),
             timeout: None,
             clients: Pool::new(),
-            refused: Refused::default(),
+            claiming: Claiming::new(Claimant::process()),
         }
+    }
+
+    /// The claimed files this Location could not return yet: each by its
+    /// claimed name, and why. Each goes back as soon as its name is free.
+    #[must_use]
+    pub fn held(&self) -> Vec<Held> {
+        self.claiming.held()
     }
 
     /// Authenticate as this user.
@@ -198,6 +206,14 @@ impl Configured for SftpTransport {
         }
         Ok(transport)
     }
+
+    /// Claims made in `node`'s name from here on; what that name still
+    /// holds on the server is returned by the first receive that reaches
+    /// it (ADR-0024, amendment 2026-10-13).
+    fn on_node(mut self, node: &NodeLocation) -> Result<Self> {
+        self.claiming = Claiming::recovering(Claimant::of(node));
+        Ok(self)
+    }
 }
 
 /// The last `/`-separated segment of `path`, the file's own name.
@@ -222,21 +238,22 @@ impl Transport for SftpTransport {
         transport::Waiting::Polled("a receive lists the directory and returns")
     }
 
-    /// Every file in the directory, listed on the connection kept for the
-    /// server — keys exchanged and authenticated on the first receive — and
+    /// Every file in the directory that is finished, not refused as it
+    /// lies, and won — listed and claimed on the connection kept for the
+    /// server, keys exchanged and authenticated on the first receive — and
     /// handed back unread: each body is read a request at a time as the
-    /// runtime asks, `Accepted` removes the file, `Refused` leaves it and
-    /// it is not listed again while its length and modification time stay
-    /// as they were, `Failed` leaves it for the next receive
-    /// ([`connection`]). A scheduled pickup, so the arrival carries no peer:
-    /// the key in play was Xmip's own.
+    /// runtime asks, `Accepted` removes the claimed file, `Refused` renames
+    /// it back and it is not listed again while its length and modification
+    /// time stay as they were, `Failed` renames it back for the next
+    /// receive ([`connection`]). A scheduled pickup, so the arrival carries
+    /// no peer: the key in play was Xmip's own.
     fn receive(&self) -> Result<Vec<Arrived>> {
         let authority = self.authority();
         let origin = |name: &str| format!("sftp://{authority}/{name}");
         self.clients.exchange(
             authority,
             || self.connect(authority).map(Connection::new),
-            |connection| connection.harvest(origin, &self.refused),
+            |connection| connection.harvest(origin, &self.claiming),
         )
     }
 
@@ -251,8 +268,30 @@ impl Transport for SftpTransport {
         )
     }
 
+    /// The file family's claim, in SFTP's words (ADR-0024, amendment
+    /// 2026-10-13).
     fn claims(&self) -> Option<&dyn ResourceClaim> {
-        Some(&NoNativeClaim)
+        Some(self)
+    }
+}
+
+impl Sited for SftpTransport {
+    type Stamp = Stamp;
+
+    fn claiming(&self) -> &Claiming<Stamp> {
+        &self.claiming
+    }
+
+    /// On a channel of its own over the connection kept for the server.
+    fn with_site<T>(&self, act: &mut dyn FnMut(Site<'_, Stamp>) -> Result<T>) -> Result<T> {
+        let authority = self.authority();
+        self.clients.exchange(
+            authority,
+            || self.connect(authority).map(Connection::new),
+            |connection| {
+                connection.with(|client| client.with_subsystem(|sftp| act(&SftpSite::new(sftp))))
+            },
+        )
     }
 }
 
@@ -261,6 +300,16 @@ mod tests {
     use super::*;
     use transport::loopback::Loopback;
     use transport::socket;
+
+    /// What two listings take: a file is taken by the listing after the
+    /// one that found it unchanged.
+    fn settled(near: &SftpTransport) -> Vec<Arrived> {
+        let first = near.receive().expect("listed");
+        if !first.is_empty() {
+            return first;
+        }
+        near.receive().expect("listed again")
+    }
 
     #[test]
     fn sftp_declares_its_settings_and_reads_through_them() {
@@ -283,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn the_transport_names_itself_and_claims_without_locking() {
+    fn the_transport_names_itself_and_claims_its_files() {
         let transport = SftpTransport::new("sftp://host:22/in");
         assert_eq!(transport.name(), "sftp");
         assert_eq!(transport.directions(), Directions::BOTH);
@@ -368,7 +417,7 @@ mod tests {
         // One key exchange for every harvest: the file taken once.
         assert_eq!(arrived.len(), 1);
         assert_eq!(arrived[0].bytes, b"harvested");
-        assert_eq!(near.receive().expect("harvested again").len(), 1);
+        assert_eq!(settled(&near).len(), 1, "harvested again");
         assert_eq!(near.clients.opened(), 2);
         drop(near);
         far_end.join().expect("far end");
@@ -388,7 +437,7 @@ mod tests {
             server::serve(stream, &host, files).expect("served")
         });
         let near = SftpTransport::new(address).timing_out_after(Duration::from_secs(5));
-        let mut first = near.receive().expect("listed");
+        let mut first = settled(&near);
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(Arrived::defers));
         // The first read through to its end and failed, the second refused
@@ -406,7 +455,7 @@ mod tests {
             .refused(transport::Refusal::Unacceptable)
             .expect("refused");
 
-        let again = near.receive().expect("listed again");
+        let again = settled(&near);
         assert_eq!(again.len(), 1, "the failed file, not the refused one");
         assert!(again[0].origin_uri.ends_with("/a.edi"));
         let taken = again
@@ -418,7 +467,7 @@ mod tests {
 
         // Written again, the refused file is a new arrival.
         near.send("b.edi", b"written again").expect("put");
-        let rewritten = near.receive().expect("listed after the write");
+        let rewritten = settled(&near);
         assert_eq!(rewritten.len(), 1);
         let rewritten = rewritten.into_iter().next().expect("one");
         assert!(rewritten.origin_uri.ends_with("/b.edi"));

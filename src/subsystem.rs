@@ -1,6 +1,7 @@
 //! The SFTP subsystem, version 3 (draft-ietf-secsh-filexfer-02): the client's
-//! requests — INIT, OPEN, WRITE, READ, CLOSE, OPENDIR, READDIR, REMOVE — and
-//! the wire vocabulary they share with the far end in [`crate::directory`].
+//! requests — INIT, OPEN, WRITE, READ, CLOSE, OPENDIR, READDIR, REMOVE, and
+//! the claim's STAT and RENAME (`site.rs`) — and the wire vocabulary they
+//! share with the far end in [`crate::directory`].
 //! The client here is Xmip putting a file into a directory and reading files
 //! out of one, a request's worth at a time.
 
@@ -22,15 +23,19 @@ pub(crate) const WRITE: u8 = 6;
 pub(crate) const OPENDIR: u8 = 11;
 pub(crate) const READDIR: u8 = 12;
 pub(crate) const REMOVE: u8 = 13;
+pub(crate) const STAT: u8 = 17;
+pub(crate) const RENAME: u8 = 18;
 pub(crate) const STATUS: u8 = 101;
 pub(crate) const HANDLE: u8 = 102;
 pub(crate) const DATA: u8 = 103;
 pub(crate) const NAME: u8 = 104;
+pub(crate) const ATTRS: u8 = 105;
 
 const F_READ: u32 = 0x0000_0001;
 pub(crate) const F_WRITE: u32 = 0x0000_0002;
-const F_CREAT: u32 = 0x0000_0008;
-const F_TRUNC: u32 = 0x0000_0010;
+pub(crate) const F_CREAT: u32 = 0x0000_0008;
+pub(crate) const F_TRUNC: u32 = 0x0000_0010;
+pub(crate) const F_EXCL: u32 = 0x0000_0020;
 
 pub(crate) const OK: u32 = 0;
 pub(crate) const EOF: u32 = 1;
@@ -191,7 +196,7 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         self.request(REMOVE, &remove, "the remove")
     }
 
-    fn open(&mut self, name: &str, flags: u32) -> Result<String> {
+    pub(crate) fn open(&mut self, name: &str, flags: u32) -> Result<String> {
         let mut open = Vec::new();
         open.u32_be(self.id())
             .string(name.as_bytes())
@@ -225,7 +230,7 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         }
     }
 
-    fn request(&mut self, kind: u8, body: &[u8], what: &str) -> Result<()> {
+    pub(crate) fn request(&mut self, kind: u8, body: &[u8], what: &str) -> Result<()> {
         self.send(kind, body)?;
         let (reply, body) = self.recv()?;
         if reply == STATUS && code(&body)? == OK {
@@ -239,17 +244,17 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         }
     }
 
-    fn id(&mut self) -> u32 {
+    pub(crate) fn id(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         id
     }
 
-    fn send(&mut self, kind: u8, body: &[u8]) -> Result<()> {
+    pub(crate) fn send(&mut self, kind: u8, body: &[u8]) -> Result<()> {
         Ok(self.channel.write(&frame(kind, body))?)
     }
 
-    fn recv(&mut self) -> Result<(u8, Vec<u8>)> {
+    pub(crate) fn recv(&mut self) -> Result<(u8, Vec<u8>)> {
         let length = self.channel.read_exact(4)?;
         let length = u32::from_be_bytes([length[0], length[1], length[2], length[3]]) as usize;
         let body = self.channel.read_exact(length)?;
@@ -293,7 +298,7 @@ pub(crate) fn entries(body: &[u8]) -> Result<Vec<Listed>> {
 
 /// The stamp an entry's attributes give: its length and modification time
 /// where both are there, every other attribute read past.
-fn stamp(reader: &mut Cursor<'_>) -> Result<Option<Stamp>> {
+pub(crate) fn stamp(reader: &mut Cursor<'_>) -> Result<Option<Stamp>> {
     let flags = reader.u32_be()?;
     let length = if flags & ATTR_SIZE == 0 {
         None
@@ -322,7 +327,7 @@ fn stamp(reader: &mut Cursor<'_>) -> Result<Option<Stamp>> {
         .map(|(length, modified)| Stamp { length, modified }))
 }
 
-fn status_error(body: &[u8], what: &str) -> transport::TransportError {
+pub(crate) fn status_error(body: &[u8], what: &str) -> transport::TransportError {
     let mut reader = Cursor::new(body);
     let code = reader
         .u32_be()
