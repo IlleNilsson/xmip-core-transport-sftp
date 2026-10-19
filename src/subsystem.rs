@@ -101,17 +101,17 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
         Ok(sftp)
     }
 
-    /// Put `bytes` into the directory as `name`.
+    /// Put `outgoing`'s body into the directory as `name`, a `WRITE` of
+    /// [`CHUNK`] bytes at a time as it is read, never whole in memory; an
+    /// empty body one empty `WRITE`.
     ///
     /// # Errors
-    /// Where the open, a write or the close was refused.
-    pub fn put(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
+    /// Where the body could not be read, or the open, a write or the close
+    /// was refused.
+    pub fn put(&mut self, name: &str, outgoing: &transport::Outgoing<'_>) -> Result<()> {
         let handle = self.open(name, F_WRITE | F_CREAT | F_TRUNC)?;
         let mut offset = 0u64;
-        for chunk in bytes
-            .chunks(CHUNK)
-            .chain(bytes.is_empty().then_some(&[][..]))
-        {
+        outgoing.pieces(CHUNK, |chunk| {
             let mut write = Vec::new();
             write
                 .u32_be(self.id())
@@ -120,7 +120,8 @@ impl<'a, 'conn> Sftp<'a, 'conn> {
                 .string(chunk);
             self.request(WRITE, &write, "the write")?;
             offset += chunk.len() as u64;
-        }
+            Ok(())
+        })?;
         self.close(&handle)
     }
 

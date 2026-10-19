@@ -147,7 +147,9 @@ mod tests {
             Some(secs(5)),
         )
         .expect("connect");
-        client.put("probe.bin", b"one exchange").expect("put");
+        client
+            .put("probe.bin", &transport::Outgoing::held(b"one exchange"))
+            .expect("put");
         // Hung up, so the far end stops waiting for another channel.
         drop(client);
         let served = far.join().expect("thread").expect("served");
@@ -224,7 +226,9 @@ mod tests {
             Some(secs(10)),
         )
         .expect("connect");
-        client.put("big.bin", &payload).expect("put");
+        client
+            .put("big.bin", &transport::Outgoing::held(&payload))
+            .expect("put");
         // Hung up, so the far end stops waiting for another channel.
         drop(client);
         let served = far.join().expect("thread").expect("served");

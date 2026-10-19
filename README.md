@@ -23,7 +23,7 @@ signature less strictly than the gate (ADR-0050, amendments 2026-09-25 and
 
 The far end serves channel after channel per connection, and `serving` serves every client a listener accepts at once over one shared directory (`transport::concurrent`): what several receiving nodes race at, as the Playground's drop box does. It keeps what the claim leans on: an open with `EXCL` of an existing name, and a rename onto one, are refused, and a rename keeps the file's modification time.
 
-A Send Location puts on an SSH connection whose keys are exchanged and whose user is authenticated once per server and kept (`transport::Pool`), a channel per file, each closed from both ends; the far end serves channel after channel until the client hangs up. Until 2026-09-27 every put exchanged keys and authenticated.
+A Send Location puts on an SSH connection whose keys are exchanged and whose user is authenticated once per server and kept (`transport::Pool`), a channel per file, each closed from both ends; the far end serves channel after channel until the client hangs up. Until 2026-09-27 every put exchanged keys and authenticated. A put sends the Message a `WRITE` request (32 KiB) at a time as it is read from the Ledger, never whole in memory (`Sending::Streamed`, 2026-10-19), and a receive claims no more files of a listing than the runtime has room for, the rest left for the next harvest.
 
 A Receive Location harvests on the same kept connection, a channel per harvest. Until 2026-09-28 every receive exchanged keys and authenticated.
 
