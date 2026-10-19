@@ -51,7 +51,8 @@ impl Loopback for SftpTransport {
             clients: Pool::new(),
             claiming: self.claiming.clone(),
         };
-        near.connect(address)?.put(PROBE, payload)
+        near.connect(address)?
+            .put(PROBE, &transport::Outgoing::held(payload))
     }
 }
 

@@ -90,9 +90,10 @@ impl Connection {
         }
     }
 
-    /// List and claim the directory on a channel of its own, as `claiming`
-    /// claims, and hand back each claimed file as an arrival read and told
-    /// over that channel: `origin` makes its origin from its dropped name.
+    /// List and claim at most `most` of the directory on a channel of its
+    /// own, as `claiming` claims, the rest left for a later harvest, and
+    /// hand back each claimed file as an arrival read and told over that
+    /// channel: `origin` makes its origin from its dropped name.
     ///
     /// # Errors
     /// Where the client is lent or broken, or the listing failed.
@@ -100,6 +101,7 @@ impl Connection {
         &self,
         origin: impl Fn(&str) -> String,
         claiming: &Claiming<Stamp>,
+        most: usize,
     ) -> Result<Vec<Arrived>> {
         let lent = std::mem::replace(&mut *self.line(), Line::Harvesting);
         let client = match lent {
@@ -115,7 +117,7 @@ impl Connection {
         let claims = claiming.clone();
         std::thread::Builder::new()
             .name("sftp-harvest".to_string())
-            .spawn(move || harvesting(client, &line, &claims, &listed, &requests))
+            .spawn(move || harvesting(client, &line, most, &claims, &listed, &requests))
             .map_err(|e| transport::error::classify("starting a harvest", &e))?;
         let taken = taken
             .recv()
@@ -171,12 +173,13 @@ impl Pooled for Connection {
 fn harvesting(
     mut client: Client,
     line: &Mutex<Line>,
+    most: usize,
     claiming: &Claiming<Stamp>,
     listed: &SyncSender<Result<Vec<Taken>>>,
     requests: &Receiver<Request>,
 ) {
     let harvested = client.with_subsystem(|sftp| {
-        let taken = claiming.take(&SftpSite::new(sftp))?;
+        let taken = claiming.take(&SftpSite::new(sftp), most)?;
         if taken.is_empty() {
             return Ok(Ended::Empty);
         }

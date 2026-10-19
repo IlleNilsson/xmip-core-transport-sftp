@@ -247,24 +247,30 @@ impl Transport for SftpTransport {
     /// time stay as they were, `Failed` renames it back for the next
     /// receive ([`connection`]). A scheduled pickup, so the arrival carries
     /// no peer: the key in play was Xmip's own.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         let authority = self.authority();
         let origin = |name: &str| format!("sftp://{authority}/{name}");
         self.clients.exchange(
             authority,
             || self.connect(authority).map(Connection::new),
-            |connection| connection.harvest(origin, &self.claiming),
+            |connection| connection.harvest(origin, &self.claiming, most),
+        )
+    }
+
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed(
+            "each WRITE request carries the next piece of the body as it is read",
         )
     }
 
     /// Put the file on the connection kept for the server, keys exchanged
     /// and authenticated on the first send to it; a channel per file.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
         let (address, name) = self.resolve(target);
         self.clients.exchange(
             address,
             || self.connect(address).map(Connection::new),
-            |connection| connection.with(|client| client.put(name, bytes)),
+            |connection| connection.with(|client| client.put(name, &outgoing)),
         )
     }
 

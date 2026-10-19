@@ -86,11 +86,11 @@ impl Client {
         Ok(outcome)
     }
 
-    /// Put `bytes` into the directory as `name`.
+    /// Put `outgoing`'s body into the directory as `name`, as it is read.
     ///
     /// # Errors
-    /// Where the subsystem refused the put.
-    pub fn put(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
-        self.with_subsystem(|sftp| sftp.put(name, bytes))
+    /// Where the body could not be read, or the subsystem refused the put.
+    pub fn put(&mut self, name: &str, outgoing: &transport::Outgoing<'_>) -> Result<()> {
+        self.with_subsystem(|sftp| sftp.put(name, outgoing))
     }
 }
