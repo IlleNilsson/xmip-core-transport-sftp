@@ -27,6 +27,12 @@ A Send Location puts on an SSH connection whose keys are exchanged and whose use
 
 A Receive Location harvests on the same kept connection, a channel per harvest. Until 2026-09-28 every receive exchanged keys and authenticated.
 
+## Names, and a directory to a user
+
+A file keeps its name both ways (ADR-0024, amendment 2026-10-20): an arrival carries the name it was dropped under as `file.name`, which the Message Context keeps, and a send names its file as the file family does — the name the Message was received under, else its identifier, or the target's own name where a test or a tool sends bytes it holds — the one naming in the transport capability (`transport::file_name`). Until 2026-10-22 a send named its file by its target's last segment, so a Send Location whose address named the server alone wrote every file under one empty name.
+
+The far end serves one directory to everyone (`serving`) or one to each user (`serving_each`), and tells its owner of every file a client finished writing as it closes it (`Directory::telling`): the Parties' far end the Playground serves the nodes on machines of their own, each Location a user of its own there (ADR-0028, amendment 2026-10-22). The client still lists and names files in the directory its login lands in; a path in its address is not yet followed.
+
 ## The claim
 
 A file is taken once it is finished, and by one node (ADR-0024, amendment 2026-10-13): several receiving nodes may poll one directory, and whichever claims a file has it. The claim is the file family's, written once in the transport capability (`transport::claim`), in SFTP's words (`src/site.rs`): a file is taken by the listing after the one whose `READDIR` entry gave it the same length and modification time — the stability check, checked again by `SSH_FXP_STAT` once its turn is held; its turn is `<name>.xmip-claim`, opened with `SSH_FXF_CREAT` and `SSH_FXF_EXCL`, which the server refuses where it exists, holding the node's name; the claim is `SSH_FXP_RENAME` to `<name>.xmip-claim.<node location, percent-encoded>.<nanoseconds>`. A node built by the runtime (`Configured::on_node`) returns every claim its name still holds, and removes its turns, at its first receive that reaches the server. Until 2026-10-13 a receive claimed nothing, and two nodes on one directory could both take a file.

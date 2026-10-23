@@ -30,14 +30,19 @@ use ssh::channel::Channel;
 /// One directory several connections serve at once.
 pub type Shared = Arc<Mutex<Directory>>;
 
-/// The directory the far end serves: its files, and when each was last
-/// written, the modification time a listing gives beside its length.
+/// Told the name of each file a client finished writing.
+pub type Told = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The directory the far end serves: its files, when each was last
+/// written, the modification time a listing gives beside its length, and
+/// who is told of each file a client finished writing.
 #[derive(Default)]
 pub struct Directory {
     /// The files, name to bytes.
     pub files: Files,
     written: BTreeMap<String, u32>,
     newest: u32,
+    told: Option<Told>,
 }
 
 impl Directory {
@@ -48,6 +53,15 @@ impl Directory {
             files,
             ..Self::default()
         }
+    }
+
+    /// The same directory, telling `told` the name of each file a client
+    /// finished writing, as it closes it: what a far end's owner is told
+    /// instead of looking (ADR-0028, amendment 2026-10-22).
+    #[must_use]
+    pub fn telling(mut self, told: Told) -> Self {
+        self.told = Some(told);
+        self
     }
 
     /// Note `name` written now: in seconds since the Unix epoch, as SFTP
@@ -129,7 +143,11 @@ fn answer(
         CLOSE => {
             let id = reader.u32_be()?;
             let handle = utf8(reader.string()?)?;
-            handles.remove(&handle);
+            if let (Some(Handle::Write(name)), Some(told)) =
+                (handles.remove(&handle), &directory.told)
+            {
+                told(&name);
+            }
             Ok(status(id, OK, "closed"))
         }
         REMOVE => {
@@ -433,6 +451,29 @@ mod tests {
             files.modified("probe.bin") > first,
             "within the same second too"
         );
+    }
+
+    #[test]
+    fn its_owner_is_told_each_file_a_client_finished_writing() {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let telling = Arc::clone(&heard);
+        let told: Told = Arc::new(move |name: &str| {
+            telling
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(name.to_string());
+        });
+        let mut files = Directory::default().telling(told);
+        let mut handles = BTreeMap::new();
+        let handle = open_write(&mut files, &mut handles);
+        assert!(
+            heard.lock().expect("heard").is_empty(),
+            "not before it closes"
+        );
+        let mut close = Vec::new();
+        close.u32_be(3).string(handle.as_bytes());
+        answer(CLOSE, &close, &mut files, &mut handles, &mut 1).expect("closed");
+        assert_eq!(*heard.lock().expect("heard"), ["probe.bin"]);
     }
 
     #[test]

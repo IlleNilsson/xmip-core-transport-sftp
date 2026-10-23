@@ -19,6 +19,7 @@
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use context::property::FILE_NAME;
 use transport::body::chunked;
 use transport::claim::{Claiming, Taken};
 use transport::error::{Result, TransportError, protocol_error};
@@ -148,7 +149,11 @@ impl Connection {
             .into_iter()
             .zip(acknowledgements)
             .map(|(Taken { dropped, claimed }, told)| {
-                arrival(origin(&dropped), claimed, &asking, told)
+                // The name it was dropped under, which the Message Context
+                // keeps for a send to write it by (ADR-0024, amendment
+                // 2026-10-20), as a file dropped in a folder carries it.
+                let from = origin(&dropped);
+                arrival(from, claimed, &asking, told).observing(FILE_NAME, dropped)
             })
             .collect())
     }

@@ -1,13 +1,16 @@
 //! The in-process far end: a minimal SSH server that offers the `sftp`
 //! subsystem over a directory held in memory, so the transport is both ends
 //! of one exchange on this machine (ADR-0051). It is not a general SSH
-//! server — one channel at a time per connection, one directory, every
-//! credential admitted — which is all a loopback and the Playground need.
-//! A client that keeps its connection opens a channel per file, and each is
-//! served in turn until the client hangs up; [`serving`] serves every
-//! client a listener accepts at once, over one shared directory.
+//! server — one channel at a time per connection, one directory to a user,
+//! every credential admitted — which is all a loopback and the Playground
+//! need. A client that keeps its connection opens a channel per file, and
+//! each is served in turn until the client hangs up; [`serving`] serves
+//! every client a listener accepts at once, over one shared directory, and
+//! [`serving_each`] each over the directory of the user it authenticated
+//! as.
 
 use std::net::TcpStream;
+use std::ops::Deref;
 use std::sync::{Mutex, PoisonError};
 
 use ed25519_dalek::SigningKey;
@@ -79,10 +82,23 @@ pub fn serve_directory(
     held: &Mutex<directory::Directory>,
     most: usize,
 ) -> Result<(Authenticated, Vec<u8>)> {
+    serve_chosen(stream, host, |_| held, most)
+}
+
+/// Serve one connection on `stream` over the directory `chosen` gives the
+/// user who authenticated, its channels one after another, at most `most`.
+fn serve_chosen<D: Deref<Target = Mutex<directory::Directory>>>(
+    stream: TcpStream,
+    host: &SigningKey,
+    chosen: impl FnOnce(&str) -> D,
+    most: usize,
+) -> Result<(Authenticated, Vec<u8>)> {
     let mut conn = Conn::new(stream)?;
     let peer = conn.banner(kex::IDENTIFICATION)?;
     let exchanged = kex::server(&mut conn, host, &peer, kex::IDENTIFICATION)?;
     let who = userauth::serve(&mut conn, &exchanged.session_id)?;
+    let held = chosen(&who.user);
+    let held = &*held;
     let mut channel = Channel::accept(&mut conn, subsystem::SUBSYSTEM)?;
     directory::serve(&mut channel, held)?;
     channel.close()?;
@@ -114,6 +130,28 @@ pub fn serving(
     Concurrent::start(listener, "sftp-session", move |stream| {
         if transport::socket::settle(&stream, timeout).is_ok() {
             let _ = serve_directory(stream, &host, &shared, usize::MAX);
+        }
+    })
+}
+
+/// Serve every client `listener` accepts at once, each over the directory
+/// `of` gives the user it authenticated as, signing as `host`, each read
+/// given up after `timeout`: one server whose every account has a directory
+/// of its own, as a trading Party's server gives each Party one — the
+/// Parties' far end the Playground serves the nodes on machines of their
+/// own (ADR-0028, amendment 2026-10-22). Dropped, it stops accepting.
+///
+/// # Errors
+/// Where the listener's address could not be read.
+pub fn serving_each(
+    listener: std::net::TcpListener,
+    host: SigningKey,
+    of: impl Fn(&str) -> directory::Shared + Send + Sync + 'static,
+    timeout: Option<std::time::Duration>,
+) -> Result<Concurrent> {
+    Concurrent::start(listener, "sftp-session", move |stream| {
+        if transport::socket::settle(&stream, timeout).is_ok() {
+            let _ = serve_chosen(stream, &host, &of, usize::MAX);
         }
     })
 }
