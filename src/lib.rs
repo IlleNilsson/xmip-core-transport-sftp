@@ -58,11 +58,12 @@ use ed25519_dalek::SigningKey;
 pub use client::{Client, Credential};
 pub use connection::Connection;
 use net::Target;
-pub use server::{Served, serving};
+pub use server::{Served, serving, serving_each};
 pub use site::SftpSite;
 pub use subsystem::Stamp;
 use transport::claim::{Claimant, Claiming, Held, Site, Sited};
 use transport::error::Result;
+use transport::file_name::file_name;
 use transport::loopback::LOOPBACK_TIMEOUT;
 use transport::{Arrived, Configured, Directions, NodeLocation, Pool, ResourceClaim, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
@@ -264,9 +265,13 @@ impl Transport for SftpTransport {
     }
 
     /// Put the file on the connection kept for the server, keys exchanged
-    /// and authenticated on the first send to it; a channel per file.
+    /// and authenticated on the first send to it; a channel per file. It is
+    /// named as the file family names it (`transport::file_name`): the name
+    /// the Message was received under, else its identifier; the target's
+    /// own name where a test or a tool sent bytes it holds.
     fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
-        let (address, name) = self.resolve(target);
+        let (address, given) = self.resolve(target);
+        let name = &file_name(&outgoing, None, given, address)?;
         self.clients.exchange(
             address,
             || self.connect(address).map(Connection::new),
@@ -491,6 +496,52 @@ mod tests {
                 .get("b.edi")
                 .expect("the refused file lies there"),
             b"written again"
+        );
+    }
+
+    #[test]
+    fn each_user_has_a_directory_and_a_file_keeps_its_name_both_ways() {
+        use context::property::FILE_NAME;
+        use std::sync::{Arc, PoisonError};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = format!("sftp://{}", listener.local_addr().expect("address"));
+        let dropped: directory::Shared = Arc::default();
+        let out: directory::Shared = Arc::default();
+        dropped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .files
+            .insert("edi-x12-1".to_string(), b"ISA".to_vec());
+        let (to_drop, to_out) = (Arc::clone(&dropped), Arc::clone(&out));
+        let host = SigningKey::from_bytes(&[0x5e; 32]);
+        let chosen = move |user: &str| Arc::clone(if user == "drop" { &to_drop } else { &to_out });
+        let _far =
+            serving_each(listener, host, chosen, Some(Duration::from_secs(5))).expect("serving");
+
+        let receive = SftpTransport::new(address.clone())
+            .as_user("drop")
+            .timing_out_after(Duration::from_secs(5));
+        let mut arrived = settled(&receive);
+        assert_eq!(arrived.len(), 1);
+        let taken = arrived.remove(0).taken().expect("taken");
+        assert_eq!(taken.observation(FILE_NAME), Some("edi-x12-1"));
+
+        let named = context::MessageContext::new()
+            .with_value(FILE_NAME, xcore::ScalarValue::Text("edi-x12-1".to_string()));
+        let send = SftpTransport::new(address.clone())
+            .as_user("out")
+            .timing_out_after(Duration::from_secs(5));
+        send.send_from(&address, transport::Outgoing::held(b"ISA").carrying(&named))
+            .expect("put under its name");
+        let kept = out.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            kept.files.get("edi-x12-1").map(Vec::as_slice),
+            Some(&b"ISA"[..])
+        );
+        let left = dropped.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            left.files.is_empty(),
+            "taken from the drop user's directory alone"
         );
     }
 
