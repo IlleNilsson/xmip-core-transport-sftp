@@ -182,7 +182,7 @@ mod tests {
             &address,
             "xmip",
             &Credential::PublicKey(Box::new(auth)),
-            Some(secs(5)),
+            (Some(secs(5)), &transport::Pinned::in_memory()),
         )
         .expect("connect");
         client
@@ -261,7 +261,7 @@ mod tests {
             &address,
             "xmip",
             &Credential::PublicKey(Box::new(auth)),
-            Some(secs(10)),
+            (Some(secs(10)), &transport::Pinned::in_memory()),
         )
         .expect("connect");
         client

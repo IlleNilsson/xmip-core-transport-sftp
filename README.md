@@ -52,3 +52,7 @@ here.
 
 The included workflow is manual-only and calls the versioned shared workflow at
 `IlleNilsson/.github@v1`.
+
+## The address alone
+
+A Location is entered by its address (ADR-0064, amendment 2026-10-28): `sftp://user@host:22/dir`, the user it logs in as in the address's user part — `xmip` where it names none — its password or key through the Location's credentials, never a setting. The `user` setting is deleted; `timeout` remains.

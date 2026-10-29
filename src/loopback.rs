@@ -48,6 +48,7 @@ impl Loopback for SftpTransport {
             user: self.user.clone(),
             credential: self.credential.clone(),
             timeout: self.timeout,
+            pins: std::sync::Arc::clone(&self.pins),
             clients: Pool::new(),
             claiming: self.claiming.clone(),
         };

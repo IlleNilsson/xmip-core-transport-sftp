@@ -228,7 +228,7 @@ fn answering(
             Request::Read(name, chunks) => reading(sftp, &name, &chunks)?,
             Request::Told(claimed, verdict, done) => {
                 let site = SftpSite::new(sftp);
-                let _ = done.send(claiming.told(&site, &claimed, verdict, true));
+                let _ = done.send(claiming.told(&site, &claimed, verdict));
             }
             Request::Finish(finished) => return Ok(Some(finished)),
         }
