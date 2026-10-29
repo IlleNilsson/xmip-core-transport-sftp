@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 
+use transport::Pinned;
 use transport::error::Result;
 use transport::pool::{Pooled, alive};
 use transport::socket;
@@ -44,21 +45,31 @@ impl Pooled for Client {
 }
 
 impl Client {
-    /// Connect to `address`, exchange keys, and authenticate as `user`.
+    /// Connect to `address`, exchange keys, hold the server's host key to the
+    /// one `pins` keeps for `sftp://<address>` — pinning it on first
+    /// contact (ADR-0019, amendment 2026-10-28) — and only then authenticate
+    /// as `user`, so no credential reaches a server that is not the one it
+    /// was.
     ///
     /// # Errors
-    /// Where the connection, the key exchange or the authentication failed.
+    /// Where the connection, the key exchange or the authentication failed,
+    /// or the server presented a host key other than the one pinned for it.
     pub fn connect(
         address: &str,
         user: &str,
         credential: &Credential,
-        timeout: Option<Duration>,
+        (timeout, pins): (Option<Duration>, &Pinned),
     ) -> Result<Self> {
         let stream = socket::connect_tcp(address, timeout)?;
         socket::settle(&stream, timeout)?;
         let mut conn = Conn::new(stream)?;
         let peer = conn.banner(kex::IDENTIFICATION)?;
         let exchanged = kex::client(&mut conn, kex::IDENTIFICATION, &peer)?;
+        let host = ssh::key::PublicKey::parse(&exchanged.host_key)?;
+        pins.hold(
+            &format!("sftp://{address}"),
+            &host.fingerprint().to_string(),
+        )?;
         userauth::request_service(&mut conn)?;
         match credential {
             Credential::Password(secret) => userauth::password(&mut conn, user, secret)?,

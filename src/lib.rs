@@ -38,10 +38,17 @@
 //! only `ssh.user`.
 //!
 //! What is not here: only `aes256-ctr` with `hmac-sha2-256` is offered, so a
-//! peer that will speak nothing else cannot connect; there is no known-hosts
-//! check, so the host key is taken as presented (an inferred identity,
-//! ADR-0019 clause 8); and the far end's subsystem holds each directory
-//! whole in memory, a file no larger than `net::MAX_BODY`.
+//! peer that will speak nothing else cannot connect; and the far end's
+//! subsystem holds each directory whole in memory, a file no larger than
+//! `net::MAX_BODY`.
+//!
+//! **A server's host key is pinned on first contact** (ADR-0019, amendment
+//! 2026-10-28): the first key `sftp://<host:port>` presents is kept, with no
+//! confirmation step, and a later different one is refused before any
+//! credential is presented ([`Client::connect`], `transport::Pinned`). A
+//! node keeps its pins under its data directory, so a restart holds a
+//! server to the key it presented before; until 2026-10-28 the host key
+//! was taken as presented.
 
 pub mod client;
 pub mod connection;
@@ -51,6 +58,7 @@ pub mod server;
 pub mod site;
 pub mod subsystem;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
@@ -65,7 +73,9 @@ use transport::claim::{Claimant, Claiming, Held, Site, Sited};
 use transport::error::Result;
 use transport::file_name::file_name;
 use transport::loopback::LOOPBACK_TIMEOUT;
-use transport::{Arrived, Configured, Directions, NodeLocation, Pool, ResourceClaim, Transport};
+use transport::{
+    Arrived, Configured, Directions, NodeLocation, Pinned, Pool, ResourceClaim, Transport,
+};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
@@ -74,6 +84,9 @@ pub struct SftpTransport {
     user: String,
     credential: Credential,
     timeout: Option<Duration>,
+    /// The host keys its servers are held to, pinned on first contact: the
+    /// node's, kept under its data directory, where the runtime built it.
+    pins: Arc<Pinned>,
     /// The connections a send puts on and a receive harvests on, keys
     /// exchanged and authenticated once per server and kept, lent to a
     /// receive until its arrivals have their verdicts.
@@ -99,6 +112,7 @@ impl SftpTransport {
             user: "xmip".to_string(),
             credential: Credential::Password("xmip".to_string()),
             timeout: None,
+            pins: Arc::new(Pinned::in_memory()),
             clients: Pool::new(),
             claiming: Claiming::new(Claimant::process()),
         }
@@ -150,7 +164,7 @@ impl SftpTransport {
 
     /// The authority `endpoint` names, or `endpoint` itself where it is bare.
     fn authority(&self) -> &str {
-        Target::under(&["sftp"], &self.endpoint)
+        Target::under(Self::SCHEMES, &self.endpoint)
             .map(|named| (named.authority(), named.path()))
             .map_or(self.endpoint.as_str(), |(authority, _)| authority)
     }
@@ -158,7 +172,7 @@ impl SftpTransport {
     /// Where a target names the server and file — `sftp://host/dir/name` — or
     /// is a name alone on this transport's server.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match Target::under(&["sftp"], target).map(|named| (named.authority(), named.path())) {
+        match Target::under(Self::SCHEMES, target).map(|named| (named.authority(), named.path())) {
             Some((authority, path)) => (authority, last_segment(path)),
             None => (self.authority(), target),
         }
@@ -166,40 +180,44 @@ impl SftpTransport {
 
     /// Connect and authenticate, as both `send` and `receive` do.
     fn connect(&self, address: &str) -> Result<Client> {
-        Client::connect(address, &self.user, &self.credential, self.timeout)
+        Client::connect(
+            address,
+            &self.user,
+            &self.credential,
+            (self.timeout, &self.pins),
+        )
     }
 }
 
 impl Configured for SftpTransport {
-    /// The address is the server and directory, `sftp://host:22/dir`, or
-    /// `host:22` alone: where a Receive Location takes files from and a Send
-    /// Location puts them.
+    /// The address is the user, server and directory,
+    /// `sftp://user@host:22/dir`, or `host:22` alone: where a Receive
+    /// Location takes files from and a Send Location puts them, as the user
+    /// it names, `xmip` where it names none.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "user",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The user the session authenticates as; `xmip` when left out.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a peer that stops mid-exchange is waited on; unbounded when \
+        settings: &[Setting {
+            name: "timeout",
+            kind: Kind::Duration,
+            presence: Presence::Optional,
+            meaning: "How long a peer that stops mid-exchange is waited on; unbounded when \
                           left out.",
-                applies: Applies::Both,
-            },
-        ],
+            applies: Applies::Both,
+        }],
     };
 
-    /// The password or the key comes through the Location's credentials,
-    /// not a setting.
+    const SCHEMES: &'static [&'static str] = &["sftp"];
+
+    /// The whole address: its user part is the user it logs in as.
+    fn own_terms(address: &str) -> &str {
+        address
+    }
+
+    /// The user comes from the address; the password or the key through
+    /// the Location's credentials, never a setting.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address);
-        if let Some(user) = settings.optional_text("user") {
+        if let Some(user) = Target::under(Self::SCHEMES, address).and_then(|named| named.user()) {
             transport = transport.as_user(user);
         }
         if let Some(timeout) = settings.optional_duration("timeout") {
@@ -214,6 +232,13 @@ impl Configured for SftpTransport {
     fn on_node(mut self, node: &NodeLocation) -> Result<Self> {
         self.claiming = Claiming::recovering(Claimant::of(node));
         Ok(self)
+    }
+
+    /// The node's pins: each server's host key is held to the one it
+    /// presented first.
+    fn pinned_by(mut self, pins: &Arc<Pinned>) -> Self {
+        self.pins = Arc::clone(pins);
+        self
     }
 }
 
@@ -326,12 +351,9 @@ mod tests {
     fn sftp_declares_its_settings_and_reads_through_them() {
         use xcore::settings::Given;
         assert_eq!(SftpTransport::SETTINGS.problems(), Vec::<String>::new());
-        let given = [
-            ("user".to_string(), Given::Text("courier".to_string())),
-            ("timeout".to_string(), Given::Text("2s".to_string())),
-        ];
-        let built =
-            SftpTransport::open("sftp://host:22/in", Applies::Receive, &given).expect("configured");
+        let given = [("timeout".to_string(), Given::Text("2s".to_string()))];
+        let built = SftpTransport::open("sftp://courier@host:22/in", Applies::Receive, &given)
+            .expect("configured");
         assert_eq!(built.authority(), "host:22");
         assert_eq!(built.user, "courier");
         assert_eq!(built.timeout, Some(Duration::from_secs(2)));
@@ -340,6 +362,11 @@ mod tests {
             panic!("a password is a credential, not a setting");
         };
         assert!(refused.message.contains("\"password\""), "{refused}");
+        let user = [("user".to_string(), Given::Text("courier".to_string()))];
+        assert!(
+            SftpTransport::open("host:22", Applies::Send, &user).is_err(),
+            "the user is the address's"
+        );
     }
 
     #[test]
@@ -580,5 +607,39 @@ mod tests {
             "{}",
             arrived.origin_uri
         );
+    }
+
+    #[test]
+    fn a_server_is_held_to_the_host_key_it_presented_first_and_refused_another() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        let far_end = std::thread::spawn(move || {
+            let host = SigningKey::from_bytes(&[0x5e; 32]);
+            for _ in 0..2 {
+                let (stream, _) =
+                    socket::accept_tcp(&listener, Some(Duration::from_secs(5))).expect("accept");
+                let _ = server::serve_channels(stream, &host, subsystem::Files::new(), 1);
+            }
+        });
+        let pins = Arc::new(Pinned::in_memory());
+        let near = SftpTransport::new(address.clone())
+            .timing_out_after(Duration::from_secs(5))
+            .pinned_by(&pins);
+        near.send("first.edi", b"pinned")
+            .expect("pinned on first contact");
+
+        let elsewhere = Arc::new(Pinned::in_memory());
+        elsewhere
+            .hold(&format!("sftp://{address}"), "SHA256:another")
+            .expect("pinned before");
+        let held = SftpTransport::new(address)
+            .timing_out_after(Duration::from_secs(5))
+            .pinned_by(&elsewhere);
+        let refused = held
+            .send("second.edi", b"refused")
+            .expect_err("not its key");
+        assert!(!refused.retryable, "{refused}");
+        assert!(refused.message.contains("SHA256:another"), "{refused}");
+        far_end.join().expect("served");
     }
 }
