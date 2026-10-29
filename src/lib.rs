@@ -70,12 +70,13 @@ pub use server::{Served, serving, serving_each};
 pub use site::SftpSite;
 pub use subsystem::Stamp;
 use transport::claim::{Claimant, Claiming, Held, Site, Sited};
-use transport::error::Result;
+use transport::error::{Result, TransportError};
 use transport::file_name::file_name;
 use transport::loopback::LOOPBACK_TIMEOUT;
 use transport::{
-    Arrived, Configured, Directions, NodeLocation, Pinned, Pool, ResourceClaim, Transport,
+    Arrived, Configured, Directions, NodeLocation, Pinned, Pool, ResourceClaim, Secured, Transport,
 };
+use xcore::SecretKind;
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
@@ -83,6 +84,10 @@ pub struct SftpTransport {
     endpoint: String,
     user: String,
     credential: Credential,
+    /// The secret its Location names, read as it connects: a password or
+    /// a key, presented in place of `credential` (ADR-0019, amendment
+    /// 2026-10-29).
+    secured: Option<Secured>,
     timeout: Option<Duration>,
     /// The host keys its servers are held to, pinned on first contact: the
     /// node's, kept under its data directory, where the runtime built it.
@@ -111,6 +116,7 @@ impl SftpTransport {
             endpoint: endpoint.into(),
             user: "xmip".to_string(),
             credential: Credential::Password("xmip".to_string()),
+            secured: None,
             timeout: None,
             pins: Arc::new(Pinned::in_memory()),
             clients: Pool::new(),
@@ -178,12 +184,34 @@ impl SftpTransport {
         }
     }
 
+    /// What it authenticates with now: the secret its Location names, read
+    /// at this connection, or the credential it was built with.
+    fn presented(&self) -> Result<Credential> {
+        let Some(secured) = &self.secured else {
+            return Ok(self.credential.clone());
+        };
+        let secret = secured.secret()?;
+        match secret.kind() {
+            SecretKind::Password => Ok(Credential::Password(secret.text().to_string())),
+            SecretKind::Key => ssh::private_key::ed25519(secret.text())
+                .map(|key| Credential::PublicKey(Box::new(key)))
+                .map_err(|refused| {
+                    let name = secured.name();
+                    TransportError::permanent(format!("the secret '{name}': {refused}"))
+                }),
+            SecretKind::Certificate => Err(TransportError::permanent(format!(
+                "the secret '{}' is a certificate; sftp presents a password or a key",
+                secured.name()
+            ))),
+        }
+    }
+
     /// Connect and authenticate, as both `send` and `receive` do.
     fn connect(&self, address: &str) -> Result<Client> {
         Client::connect(
             address,
             &self.user,
-            &self.credential,
+            &self.presented()?,
             (self.timeout, &self.pins),
         )
     }
@@ -213,8 +241,8 @@ impl Configured for SftpTransport {
         address
     }
 
-    /// The user comes from the address; the password or the key through
-    /// the Location's credentials, never a setting.
+    /// The user comes from the address; the password or the key is the
+    /// secret the Location names, never a setting.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address);
         if let Some(user) = Target::under(Self::SCHEMES, address).and_then(|named| named.user()) {
@@ -239,6 +267,13 @@ impl Configured for SftpTransport {
     fn pinned_by(mut self, pins: &Arc<Pinned>) -> Self {
         self.pins = Arc::clone(pins);
         self
+    }
+
+    /// The password or the key the Location's secret holds, read at each
+    /// connection.
+    fn secured_by(mut self, secured: Secured) -> Result<Self> {
+        self.secured = Some(secured);
+        Ok(self)
     }
 }
 

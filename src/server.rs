@@ -272,4 +272,57 @@ mod tests {
         let served = far.join().expect("thread").expect("served");
         assert_eq!(served.files.get("big.bin").expect("kept"), &payload);
     }
+
+    /// The one secret a test sets, or none.
+    struct One(Option<xcore::Secret>);
+
+    impl xcore::Secrets for One {
+        fn secret(
+            &self,
+            _name: &xcore::SecretName,
+        ) -> std::result::Result<Option<xcore::Secret>, xcore::Failure> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn a_location_presents_the_key_its_secret_holds_and_says_one_not_set() {
+        use transport::{Configured as _, Secured, Transport as _};
+        let name = xcore::SecretName::new("partner-x.sftp").expect("a name");
+        let unset = Secured::new(name.clone(), std::sync::Arc::new(One(None)));
+        let near = crate::SftpTransport::new("127.0.0.1:9")
+            .secured_by(unset)
+            .expect("kept");
+        let refused = near.send("probe.bin", b"x").expect_err("not set");
+        assert!(
+            refused.message.contains("'partner-x.sftp' is not set"),
+            "{refused}"
+        );
+
+        let host = kex::fresh_ed25519();
+        let auth = kex::fresh_ed25519();
+        let pem = ssh::private_key::written(&auth);
+        let secret = xcore::Secret::new(name.clone(), xcore::SecretKind::Key, pem.into_bytes());
+        let set = Secured::new(name, std::sync::Arc::new(One(Some(secret.expect("a key")))));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+        let far = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(secs(5))).expect("timeout");
+            serve(stream, &host, Files::new())
+        });
+        let near = crate::SftpTransport::new(address)
+            .as_user("party")
+            .timing_out_after(secs(5))
+            .secured_by(set)
+            .expect("kept");
+        near.send("probe.bin", b"keyed").expect("sent");
+        drop(near);
+        let served = far.join().expect("thread").expect("served");
+        let expected = ssh::key::PublicKey::ed25519(&auth.verifying_key()).fingerprint();
+        assert_eq!(
+            served.who.fingerprint.map(|f| f.to_string()),
+            Some(expected.to_string())
+        );
+    }
 }
