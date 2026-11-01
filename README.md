@@ -12,6 +12,10 @@ a public-key login is promoted onto the arrival as `ssh.key`, `ssh.user`,
 `ssh.signature` and `ssh.session` for the identity gate, names declared once
 in `xmip-core-context` (`context::property`) for this transport and the gates.
 
+## Who logs in
+
+The far end links no authenticator — identity presentation is not a transport's (`architecture.toml`) — and is handed the check a password is asked of (`net::login::Check`): `serve`, `serve_channels`, `serve_directory`, `serving` and `serving_each` each take one. A password is admitted only where the check admits the user and the password offered, and a client is let go after six requests (`ssh::userauth`); a key is admitted where its signature verifies, what it is worth being the `ssh-key` gate's. The loopback checks the one login its near end presents (`net::login::only`); the Playground's far ends ask `authenticate/password` (`PasswordAuthenticator::admits`). The client presents what it was built with or the secret its Location names, and nothing otherwise — SSH's `none` method, which Xmip's server refuses. Until 2026-11-01 the far end admitted any password, and a client given nothing logged in as `xmip` with the password `xmip` (open problem 59; ADR-0019, amendment 2026-11-01).
+
 SSH itself — the wire types, the binary packet protocol, the key exchange,
 the cipher, user authentication and the session channel — is
 `xmip-core-library-ssh`'s, which the ssh-key gate and identifier read keys,
@@ -31,7 +35,7 @@ A Receive Location harvests on the same kept connection, a channel per harvest. 
 
 A file keeps its name both ways (ADR-0024, amendment 2026-10-20): an arrival carries the name it was dropped under as `file.name`, which the Message Context keeps, and a send names its file as the file family does — the name the Message was received under, else its identifier, or the target's own name where a test or a tool sends bytes it holds — the one naming in the transport capability (`transport::file_name`). Until 2026-10-22 a send named its file by its target's last segment, so a Send Location whose address named the server alone wrote every file under one empty name.
 
-The far end serves one directory to everyone (`serving`) or one to each user (`serving_each`), and tells its owner of every file a client finished writing as it closes it (`Directory::telling`): the Parties' far end the Playground serves the nodes on machines of their own, each Location a user of its own there (ADR-0028, amendment 2026-10-22). The client still lists and names files in the directory its login lands in; a path in its address is not yet followed.
+The far end serves one directory to everyone (`serving`) or one to each user (`serving_each`) — by a name the check admitted, or the user a verified key signed for — and tells its owner of every file a client finished writing as it closes it (`Directory::telling`): the Parties' far end the Playground serves the nodes on machines of their own, each Location a user of its own there (ADR-0028, amendment 2026-10-22). The client still lists and names files in the directory its login lands in; a path in its address is not yet followed.
 
 ## The claim
 
@@ -55,4 +59,4 @@ The included workflow is manual-only and calls the versioned shared workflow at
 
 ## The address alone
 
-A Location is entered by its address (ADR-0064, amendment 2026-10-28): `sftp://user@host:22/dir`, the user it logs in as in the address's user part — `xmip` where it names none — its password or key the secret the Location names (`secret = "<name>"`, set with `Set-XmipSecret`), never a setting. The `user` setting is deleted; `timeout` remains.
+A Location is entered by its address (ADR-0064, amendment 2026-10-28): `sftp://user@host:22/dir`, the user it logs in as in the address's user part — no one where it names none — its password or key the secret the Location names (`secret = "<name>"`, set with `Set-XmipSecret`), never a setting. The `user` setting is deleted; `timeout` remains.
