@@ -229,7 +229,9 @@ mod tests {
         let shared: Shared = Arc::new(Mutex::new(Directory::default()));
         let host = SigningKey::from_bytes(&[0x5e; 32]);
         let timeout = Some(Duration::from_secs(10));
-        let far = crate::serving(listener, host, Arc::clone(&shared), timeout).expect("serving");
+        let check = crate::fixture::check();
+        let far =
+            crate::serving(listener, host, Arc::clone(&shared), (timeout, check)).expect("serving");
         (far, shared)
     }
 
@@ -240,7 +242,7 @@ mod tests {
 
     fn receiver(address: &str, place: usize) -> SftpTransport {
         let node = NodeLocation::new(format!("process-{}/place-{place}", std::process::id()));
-        SftpTransport::new(address)
+        crate::fixture::near(address)
             .timing_out_after(Duration::from_secs(10))
             .on_node(&node)
             .expect("built on its node")
@@ -249,7 +251,7 @@ mod tests {
     #[test]
     fn two_nodes_over_one_server_take_each_file_once() {
         let (far, shared) = server();
-        let sender = SftpTransport::new(far.address()).timing_out_after(Duration::from_secs(10));
+        let sender = crate::fixture::near(far.address()).timing_out_after(Duration::from_secs(10));
         for file in 0..FILES {
             sender
                 .send(&format!("order-{file}.edi"), file.to_string().as_bytes())

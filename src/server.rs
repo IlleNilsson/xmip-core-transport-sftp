@@ -1,13 +1,16 @@
 //! The in-process far end: a minimal SSH server that offers the `sftp`
 //! subsystem over a directory held in memory, so the transport is both ends
 //! of one exchange on this machine (ADR-0051). It is not a general SSH
-//! server — one channel at a time per connection, one directory to a user,
-//! every credential admitted — which is all a loopback and the Playground
-//! need. A client that keeps its connection opens a channel per file, and
-//! each is served in turn until the client hangs up; [`serving`] serves
-//! every client a listener accepts at once, over one shared directory, and
-//! [`serving_each`] each over the directory of the user it authenticated
-//! as.
+//! server — one channel at a time per connection, one directory to a user —
+//! which is all a loopback and the Playground need. A password is admitted
+//! only where the [`Check`] the server is handed admits it (`net::login`;
+//! the one that proves one is `authenticate/password`'s, which a transport
+//! does not link); a key where its signature verifies, what the key is
+//! worth being the identity gate's. A client that keeps its connection
+//! opens a channel per file, and each is served in turn until the client
+//! hangs up; [`serving`] serves every client a listener accepts at once,
+//! over one shared directory, and [`serving_each`] each over the directory
+//! of the user it authenticated as.
 
 use std::net::TcpStream;
 use std::ops::Deref;
@@ -15,6 +18,7 @@ use std::sync::{Mutex, PoisonError};
 
 use ed25519_dalek::SigningKey;
 
+use net::login::Check;
 use transport::concurrent::Concurrent;
 use transport::error::Result;
 
@@ -36,14 +40,15 @@ pub struct Served {
     pub session_id: Vec<u8>,
 }
 
-/// Serve one connection on `stream`, signing as `host`, over `files`: its
-/// channels one after another until the client hangs up.
+/// Serve one connection on `stream`, signing as `host`, over `files`, a
+/// password admitted where `check` admits it: its channels one after
+/// another until the client hangs up.
 ///
 /// # Errors
 /// Where the key exchange, the authentication, the first channel or a
 /// subsystem failed.
-pub fn serve(stream: TcpStream, host: &SigningKey, files: Files) -> Result<Served> {
-    serve_channels(stream, host, files, usize::MAX)
+pub fn serve(stream: TcpStream, host: &SigningKey, files: Files, check: &Check) -> Result<Served> {
+    serve_channels(stream, host, files, (usize::MAX, check))
 }
 
 /// [`serve`], and hang up after `most` channels: a far end that goes away
@@ -55,10 +60,10 @@ pub fn serve_channels(
     stream: TcpStream,
     host: &SigningKey,
     files: Files,
-    most: usize,
+    (most, check): (usize, &Check),
 ) -> Result<Served> {
     let held = Mutex::new(directory::Directory::new(files));
-    let (who, session_id) = serve_directory(stream, host, &held, most)?;
+    let (who, session_id) = serve_directory(stream, host, &held, (most, check))?;
     Ok(Served {
         files: held
             .into_inner()
@@ -71,8 +76,9 @@ pub fn serve_channels(
 
 /// Serve one connection on `stream` over `held`, a directory other
 /// connections may be serving at the same time: its channels one after
-/// another, at most `most`, until the client hangs up. Who authenticated,
-/// and the session identifier.
+/// another, at most `most`, until the client hangs up, a password
+/// admitted where `check` admits it. Who authenticated, and the session
+/// identifier.
 ///
 /// # Errors
 /// As [`serve`].
@@ -80,23 +86,25 @@ pub fn serve_directory(
     stream: TcpStream,
     host: &SigningKey,
     held: &Mutex<directory::Directory>,
-    most: usize,
+    (most, check): (usize, &Check),
 ) -> Result<(Authenticated, Vec<u8>)> {
-    serve_chosen(stream, host, |_| held, most)
+    serve_chosen(stream, host, |_| held, (most, check))
 }
 
 /// Serve one connection on `stream` over the directory `chosen` gives the
-/// user who authenticated, its channels one after another, at most `most`.
+/// user who authenticated — a name the check admitted, or the user a
+/// verified key signed for — its channels one after another, at most
+/// `most`.
 fn serve_chosen<D: Deref<Target = Mutex<directory::Directory>>>(
     stream: TcpStream,
     host: &SigningKey,
     chosen: impl FnOnce(&str) -> D,
-    most: usize,
+    (most, check): (usize, &Check),
 ) -> Result<(Authenticated, Vec<u8>)> {
     let mut conn = Conn::new(stream)?;
     let peer = conn.banner(kex::IDENTIFICATION)?;
     let exchanged = kex::server(&mut conn, host, &peer, kex::IDENTIFICATION)?;
-    let who = userauth::serve(&mut conn, &exchanged.session_id)?;
+    let who = userauth::serve(&mut conn, &exchanged.session_id, &**check)?;
     let held = chosen(&who.user);
     let held = &*held;
     let mut channel = Channel::accept(&mut conn, subsystem::SUBSYSTEM)?;
@@ -116,8 +124,8 @@ fn serve_chosen<D: Deref<Target = Mutex<directory::Directory>>>(
 
 /// Serve every client `listener` accepts at once over `shared`, signing as
 /// `host`, each read given up after `timeout`: one server several
-/// receiving nodes race at (ADR-0024, amendment 2026-10-13). Dropped, it
-/// stops accepting.
+/// receiving nodes race at (ADR-0024, amendment 2026-10-13), a password
+/// admitted where `check` admits it. Dropped, it stops accepting.
 ///
 /// # Errors
 /// Where the listener's address could not be read.
@@ -125,11 +133,11 @@ pub fn serving(
     listener: std::net::TcpListener,
     host: SigningKey,
     shared: directory::Shared,
-    timeout: Option<std::time::Duration>,
+    (timeout, check): (Option<std::time::Duration>, Check),
 ) -> Result<Concurrent> {
     Concurrent::start(listener, "sftp-session", move |stream| {
         if transport::socket::settle(&stream, timeout).is_ok() {
-            let _ = serve_directory(stream, &host, &shared, usize::MAX);
+            let _ = serve_directory(stream, &host, &shared, (usize::MAX, &check));
         }
     })
 }
@@ -139,7 +147,9 @@ pub fn serving(
 /// given up after `timeout`: one server whose every account has a directory
 /// of its own, as a trading Party's server gives each Party one — the
 /// Parties' far end the Playground serves the nodes on machines of their
-/// own (ADR-0028, amendment 2026-10-22). Dropped, it stops accepting.
+/// own (ADR-0028, amendment 2026-10-22). A password is admitted where
+/// `check` admits it, so no directory is chosen by a name nothing checked.
+/// Dropped, it stops accepting.
 ///
 /// # Errors
 /// Where the listener's address could not be read.
@@ -147,11 +157,11 @@ pub fn serving_each(
     listener: std::net::TcpListener,
     host: SigningKey,
     of: impl Fn(&str) -> directory::Shared + Send + Sync + 'static,
-    timeout: Option<std::time::Duration>,
+    (timeout, check): (Option<std::time::Duration>, Check),
 ) -> Result<Concurrent> {
     Concurrent::start(listener, "sftp-session", move |stream| {
         if transport::socket::settle(&stream, timeout).is_ok() {
-            let _ = serve_chosen(stream, &host, &of, usize::MAX);
+            let _ = serve_chosen(stream, &host, &of, (usize::MAX, &check));
         }
     })
 }
@@ -176,12 +186,12 @@ mod tests {
         let far = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(secs(5))).expect("timeout");
-            serve(stream, &host, Files::new())
+            serve(stream, &host, Files::new(), &crate::fixture::check())
         });
         let mut client = Client::connect(
             &address,
             "xmip",
-            &Credential::PublicKey(Box::new(auth)),
+            Some(&Credential::PublicKey(Box::new(auth))),
             (Some(secs(5)), &transport::Pinned::in_memory()),
         )
         .expect("connect");
@@ -217,12 +227,9 @@ mod tests {
             let mut files = Files::new();
             files.insert("a.edi".to_string(), b"first".to_vec());
             files.insert("b.edi".to_string(), b"second".to_vec());
-            serve(stream, &host, files)
+            serve(stream, &host, files, &crate::fixture::check())
         });
-        let near = crate::SftpTransport::new(address.clone())
-            .as_user("party")
-            .with_password("open")
-            .timing_out_after(secs(5));
+        let near = crate::fixture::near(address.clone()).timing_out_after(secs(5));
         let found = transport::Transport::receive(&near).expect("found");
         assert!(
             found.is_empty(),
@@ -254,13 +261,13 @@ mod tests {
         let far = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(secs(10))).expect("timeout");
-            serve(stream, &host, Files::new())
+            serve(stream, &host, Files::new(), &crate::fixture::check())
         });
         let payload = transport::payload::patterned(200_000);
         let mut client = Client::connect(
             &address,
             "xmip",
-            &Credential::PublicKey(Box::new(auth)),
+            Some(&Credential::PublicKey(Box::new(auth))),
             (Some(secs(10)), &transport::Pinned::in_memory()),
         )
         .expect("connect");
@@ -309,7 +316,7 @@ mod tests {
         let far = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(secs(5))).expect("timeout");
-            serve(stream, &host, Files::new())
+            serve(stream, &host, Files::new(), &crate::fixture::check())
         });
         let near = crate::SftpTransport::new(address)
             .as_user("party")

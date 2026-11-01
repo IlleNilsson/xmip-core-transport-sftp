@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::net::{SocketAddr, TcpListener};
 
 use ed25519_dalek::SigningKey;
+use net::login;
 
 use context::property::{SSH_KEY, SSH_SESSION, SSH_SIGNATURE, SSH_USER};
 use transport::ArrivalIdentity;
@@ -15,8 +16,8 @@ use transport::loopback::{FarEnd, Loopback};
 use transport::taken::Taken;
 use transport::{Pool, socket};
 
-use crate::SftpTransport;
 use crate::server::{self, Served};
+use crate::{Credential, SftpTransport};
 
 /// The file name the loopback's near end puts.
 const PROBE: &str = "probe.bin";
@@ -27,15 +28,21 @@ impl Loopback for SftpTransport {
     }
 
     /// A bound SSH server waiting for its one client, serving one
-    /// directory. Bound through the tcp carrier this transport is declared
-    /// over.
+    /// directory, admitting the one password its near end presents, if it
+    /// presents one. Bound through the tcp carrier this transport is
+    /// declared over.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let host = SigningKey::from_bytes(&[0x5e; 32]);
         let timeout = self.timeout;
+        let check = match &self.credential {
+            Some(Credential::Password(secret)) => login::only(self.user.clone(), secret.clone()),
+            _ => login::nobody(),
+        };
         Ok(Box::new(Listening::new(
             move |listener: &TcpListener| {
                 let (stream, peer) = socket::accept_tcp(listener, timeout)?;
-                let served = server::serve(stream, &host, crate::subsystem::Files::new())?;
+                let files = crate::subsystem::Files::new();
+                let served = server::serve(stream, &host, files, &check)?;
                 arrival(peer, &served)
             },
             tcp::TcpTransport::new(self.authority()).bind()?,
