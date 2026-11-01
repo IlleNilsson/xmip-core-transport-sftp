@@ -2,11 +2,11 @@
 //! subsystem over a directory held in memory, so the transport is both ends
 //! of one exchange on this machine (ADR-0051). It is not a general SSH
 //! server — one channel at a time per connection, one directory to a user —
-//! which is all a loopback and the Playground need. A password is admitted
-//! only where the [`Check`] the server is handed admits it (`net::login`;
-//! the one that proves one is `authenticate/password`'s, which a transport
-//! does not link); a key where its signature verifies, what the key is
-//! worth being the identity gate's. A client that keeps its connection
+//! which is all a loopback and the Playground need. A login is admitted
+//! only where the [`Check`] the server is handed admits it (`net::login`):
+//! a password, which `authenticate/password` proves, or a key whose
+//! signature verified, which `authenticate/ssh-key` says is the user's or
+//! not — authenticators a transport does not link. A client that keeps its connection
 //! opens a channel per file, and each is served in turn until the client
 //! hangs up; [`serving`] serves every client a listener accepts at once,
 //! over one shared directory, and [`serving_each`] each over the directory
@@ -41,7 +41,7 @@ pub struct Served {
 }
 
 /// Serve one connection on `stream`, signing as `host`, over `files`, a
-/// password admitted where `check` admits it: its channels one after
+/// login admitted where `check` admits it: its channels one after
 /// another until the client hangs up.
 ///
 /// # Errors
@@ -76,8 +76,8 @@ pub fn serve_channels(
 
 /// Serve one connection on `stream` over `held`, a directory other
 /// connections may be serving at the same time: its channels one after
-/// another, at most `most`, until the client hangs up, a password
-/// admitted where `check` admits it. Who authenticated, and the session
+/// another, at most `most`, until the client hangs up, a login admitted
+/// where `check` admits it. Who authenticated, and the session
 /// identifier.
 ///
 /// # Errors
@@ -92,9 +92,8 @@ pub fn serve_directory(
 }
 
 /// Serve one connection on `stream` over the directory `chosen` gives the
-/// user who authenticated — a name the check admitted, or the user a
-/// verified key signed for — its channels one after another, at most
-/// `most`.
+/// user who authenticated — a name the check admitted with its password or
+/// with its key — its channels one after another, at most `most`.
 fn serve_chosen<D: Deref<Target = Mutex<directory::Directory>>>(
     stream: TcpStream,
     host: &SigningKey,
@@ -124,7 +123,7 @@ fn serve_chosen<D: Deref<Target = Mutex<directory::Directory>>>(
 
 /// Serve every client `listener` accepts at once over `shared`, signing as
 /// `host`, each read given up after `timeout`: one server several
-/// receiving nodes race at (ADR-0024, amendment 2026-10-13), a password
+/// receiving nodes race at (ADR-0024, amendment 2026-10-13), a login
 /// admitted where `check` admits it. Dropped, it stops accepting.
 ///
 /// # Errors
@@ -147,8 +146,9 @@ pub fn serving(
 /// given up after `timeout`: one server whose every account has a directory
 /// of its own, as a trading Party's server gives each Party one — the
 /// Parties' far end the Playground serves the nodes on machines of their
-/// own (ADR-0028, amendment 2026-10-22). A password is admitted where
-/// `check` admits it, so no directory is chosen by a name nothing checked.
+/// own (ADR-0028, amendment 2026-10-22). A password or a key is admitted
+/// where `check` admits it for the user it names, so no directory is
+/// chosen by a name nothing checked.
 /// Dropped, it stops accepting.
 ///
 /// # Errors
@@ -181,12 +181,13 @@ mod tests {
     fn a_client_puts_a_file_and_the_far_end_keeps_it_with_the_peers_key() {
         let host = kex::fresh_ed25519();
         let auth = kex::fresh_ed25519();
+        let check = crate::fixture::keyed("xmip", &auth);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("addr").to_string();
         let far = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(secs(5))).expect("timeout");
-            serve(stream, &host, Files::new(), &crate::fixture::check())
+            serve(stream, &host, Files::new(), &check)
         });
         let mut client = Client::connect(
             &address,
@@ -256,12 +257,13 @@ mod tests {
     fn a_large_file_crosses_whole_through_many_write_chunks() {
         let host = kex::fresh_ed25519();
         let auth = kex::fresh_ed25519();
+        let check = crate::fixture::keyed("xmip", &auth);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("addr").to_string();
         let far = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(secs(10))).expect("timeout");
-            serve(stream, &host, Files::new(), &crate::fixture::check())
+            serve(stream, &host, Files::new(), &check)
         });
         let payload = transport::payload::patterned(200_000);
         let mut client = Client::connect(
@@ -278,6 +280,30 @@ mod tests {
         drop(client);
         let served = far.join().expect("thread").expect("served");
         assert_eq!(served.files.get("big.bin").expect("kept"), &payload);
+    }
+
+    #[test]
+    fn a_key_that_signs_for_a_user_it_is_not_enrolled_for_is_turned_down() {
+        let host = kex::fresh_ed25519();
+        let auth = kex::fresh_ed25519();
+        let check = crate::fixture::keyed("orders", &auth);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+        let far = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(secs(5))).expect("timeout");
+            serve(stream, &host, Files::new(), &check).map(|served| served.who)
+        });
+        let Err(refused) = Client::connect(
+            &address,
+            "payroll",
+            Some(&Credential::PublicKey(Box::new(auth))),
+            (Some(secs(5)), &transport::Pinned::in_memory()),
+        ) else {
+            panic!("a key enrolled for another user logged in");
+        };
+        assert!(refused.message.contains("turned"), "{refused}");
+        assert!(far.join().expect("thread").is_err(), "no directory served");
     }
 
     /// The one secret a test sets, or none.
@@ -311,12 +337,13 @@ mod tests {
         let pem = ssh::private_key::written(&auth);
         let secret = xcore::Secret::new(name.clone(), xcore::SecretKind::Key, pem.into_bytes());
         let set = Secured::new(name, std::sync::Arc::new(One(Some(secret.expect("a key")))));
+        let check = crate::fixture::keyed("party", &auth);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("addr").to_string();
         let far = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(secs(5))).expect("timeout");
-            serve(stream, &host, Files::new(), &crate::fixture::check())
+            serve(stream, &host, Files::new(), &check)
         });
         let near = crate::SftpTransport::new(address)
             .as_user("party")
