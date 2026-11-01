@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 
+use net::login::{self, Check};
 use transport::Pinned;
 use transport::error::Result;
 use transport::pool::{Pooled, alive};
@@ -15,6 +16,7 @@ use transport::socket;
 
 use ssh::channel::Channel;
 use ssh::kex;
+use ssh::key::PublicKey;
 use ssh::packet::Conn;
 use ssh::userauth;
 
@@ -27,6 +29,20 @@ pub enum Credential {
     Password(String),
     /// A key, which signs the session so the far end can hold the peer to it.
     PublicKey(Box<SigningKey>),
+}
+
+impl Credential {
+    /// The check that admits `user` presenting this credential alone: what
+    /// a far end that knows its one client is handed (`net::login`).
+    #[must_use]
+    pub fn admitted_as(&self, user: impl Into<String>) -> Check {
+        match self {
+            Self::Password(secret) => login::only(user, secret.clone()),
+            Self::PublicKey(key) => {
+                login::only_key(user, PublicKey::ed25519(&key.verifying_key()).blob())
+            }
+        }
+    }
 }
 
 /// A connected, authenticated SSH client, kept between files while the
@@ -66,7 +82,7 @@ impl Client {
         let mut conn = Conn::new(stream)?;
         let peer = conn.banner(kex::IDENTIFICATION)?;
         let exchanged = kex::client(&mut conn, kex::IDENTIFICATION, &peer)?;
-        let host = ssh::key::PublicKey::parse(&exchanged.host_key)?;
+        let host = PublicKey::parse(&exchanged.host_key)?;
         pins.hold(
             &format!("sftp://{address}"),
             &host.fingerprint().to_string(),

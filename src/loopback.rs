@@ -16,8 +16,8 @@ use transport::loopback::{FarEnd, Loopback};
 use transport::taken::Taken;
 use transport::{Pool, socket};
 
+use crate::SftpTransport;
 use crate::server::{self, Served};
-use crate::{Credential, SftpTransport};
 
 /// The file name the loopback's near end puts.
 const PROBE: &str = "probe.bin";
@@ -28,16 +28,16 @@ impl Loopback for SftpTransport {
     }
 
     /// A bound SSH server waiting for its one client, serving one
-    /// directory, admitting the one password its near end presents, if it
-    /// presents one. Bound through the tcp carrier this transport is
-    /// declared over.
+    /// directory, admitting its near end's user with the one password or
+    /// key it presents, if it presents one. Bound through the tcp carrier
+    /// this transport is declared over.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let host = SigningKey::from_bytes(&[0x5e; 32]);
         let timeout = self.timeout;
-        let check = match &self.credential {
-            Some(Credential::Password(secret)) => login::only(self.user.clone(), secret.clone()),
-            _ => login::nobody(),
-        };
+        let check = self
+            .credential
+            .as_ref()
+            .map_or_else(login::nobody, |own| own.admitted_as(self.user.clone()));
         Ok(Box::new(Listening::new(
             move |listener: &TcpListener| {
                 let (stream, peer) = socket::accept_tcp(listener, timeout)?;
