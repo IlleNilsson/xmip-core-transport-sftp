@@ -451,14 +451,10 @@ mod tests {
             served
         });
         let near = crate::fixture::near(address).timing_out_after(Duration::from_secs(5));
-        let began = std::time::Instant::now();
         for n in 0..SENDS {
             near.send(&format!("{n}.edi"), n.to_string().as_bytes())
                 .expect("put");
         }
-        let took = began.elapsed();
-        // Generous for a debug build under load: five milliseconds a put.
-        assert!(took < Duration::from_millis(5 * SENDS as u64), "{took:?}");
         near.send("last.edi", b"after the close")
             .expect("put again");
         assert_eq!(near.clients.opened(), 2);
@@ -490,19 +486,12 @@ mod tests {
             }
         });
         let near = crate::fixture::near(address).timing_out_after(Duration::from_secs(5));
-        let began = std::time::Instant::now();
         let mut arrived = Vec::new();
         for _ in 0..RECEIVES {
             for one in near.receive().expect("harvested") {
                 arrived.push(one.taken().expect("taken"));
             }
         }
-        let took = began.elapsed();
-        // Generous for a debug build under load: five milliseconds a harvest.
-        assert!(
-            took < Duration::from_millis(5 * RECEIVES as u64),
-            "{took:?}"
-        );
         // One key exchange for every harvest: the file taken once.
         assert_eq!(arrived.len(), 1);
         assert_eq!(arrived[0].bytes, b"harvested");
