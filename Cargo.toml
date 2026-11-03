@@ -34,7 +34,7 @@ tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilss
 # the identity gates read (context::property).
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
 # The key a Send Location authenticates with, and the far end's host key.
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 # The estate's encoding primitives: the byte cursor and writer the SFTP
 # packets are built from, and the base 64 a signature rides in.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
