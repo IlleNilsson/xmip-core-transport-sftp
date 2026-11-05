@@ -2,7 +2,7 @@
 //! subsystem over a directory held in memory, so the transport is both ends
 //! of one exchange on this machine (ADR-0051). It is not a general SSH
 //! server — one channel at a time per connection, one directory to a user —
-//! which is all a loopback and the Playground need. A login is admitted
+//! which is all a loopback and the Essentials need. A login is admitted
 //! only where the [`Check`] the server is handed admits it (`net::login`):
 //! a password, which `authenticate/password` proves, or a key whose
 //! signature verified, which `authenticate/ssh-key` says is the user's or
@@ -145,7 +145,7 @@ pub fn serving(
 /// `of` gives the user it authenticated as, signing as `host`, each read
 /// given up after `timeout`: one server whose every account has a directory
 /// of its own, as a trading Party's server gives each Party one — the
-/// Parties' far end the Playground serves the nodes on machines of their
+/// Parties' far end the Essentials serves the nodes on machines of their
 /// own (ADR-0028, amendment 2026-10-22). A password or a key is admitted
 /// where `check` admits it for the user it names, so no directory is
 /// chosen by a name nothing checked.

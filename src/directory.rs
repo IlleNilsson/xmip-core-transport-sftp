@@ -1,7 +1,7 @@
 //! The far end's side of the subsystem: serving one directory held in memory
 //! to whatever the client asks of it (draft-ietf-secsh-filexfer-02). Not a
 //! file system — a `BTreeMap` of names to bytes, and when each was written —
-//! which is all a loopback and the Playground need to be their own
+//! which is all a loopback and the Essentials need to be their own
 //! counterparty (ADR-0051). Several connections may serve one directory at
 //! once ([`Shared`]); each request is answered whole under its lock, as a
 //! file system makes each of its own. What the claim leans on is kept
