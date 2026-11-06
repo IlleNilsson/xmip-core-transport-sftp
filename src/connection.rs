@@ -17,7 +17,8 @@
 //! harvest fails, and the pool opens it one of its own.
 
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
+use xcore::lock::Locked;
 
 use context::property::FILE_NAME;
 use transport::body::chunked;
@@ -73,7 +74,7 @@ impl Connection {
     }
 
     fn line(&self) -> MutexGuard<'_, Line> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.locked()
     }
 
     /// Run `act` on the client while it is not lent to a harvest.
@@ -192,7 +193,7 @@ fn harvesting(
         let _ = listed.send(Ok(taken));
         answering(sftp, claiming, requests).map(Ended::Answered)
     });
-    let mut kept = line.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut kept = line.locked();
     match harvested {
         Ok(ended) => {
             *kept = Line::Here(client);

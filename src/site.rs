@@ -212,8 +212,9 @@ impl ClaimSite for SftpSite<'_, '_, '_> {
 mod tests {
     use std::collections::BTreeSet;
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use xcore::lock::Locked;
 
     use ed25519_dalek::SigningKey;
     use transport::concurrent::Concurrent;
@@ -236,7 +237,7 @@ mod tests {
     }
 
     fn names(shared: &Shared) -> Vec<String> {
-        let held = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = shared.locked();
         held.files.keys().cloned().collect()
     }
 

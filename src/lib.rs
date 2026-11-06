@@ -383,6 +383,7 @@ mod tests {
     use super::*;
     use transport::loopback::Loopback;
     use transport::socket;
+    use xcore::lock::Locked;
 
     /// What two listings take: a file is taken by the listing after the
     /// one that found it unchanged.
@@ -569,14 +570,13 @@ mod tests {
     #[test]
     fn each_user_has_a_directory_and_a_file_keeps_its_name_both_ways() {
         use context::property::FILE_NAME;
-        use std::sync::{Arc, PoisonError};
+        use std::sync::Arc;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = format!("sftp://{}", listener.local_addr().expect("address"));
         let dropped: directory::Shared = Arc::default();
         let out: directory::Shared = Arc::default();
         dropped
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .files
             .insert("edi-x12-1".to_string(), b"ISA".to_vec());
         let (to_drop, to_out) = (Arc::clone(&dropped), Arc::clone(&out));
@@ -620,12 +620,12 @@ mod tests {
             .timing_out_after(Duration::from_secs(5));
         send.send_from(&address, transport::Outgoing::held(b"ISA").carrying(&named))
             .expect("put under its name");
-        let kept = out.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = out.locked();
         assert_eq!(
             kept.files.get("edi-x12-1").map(Vec::as_slice),
             Some(&b"ISA"[..])
         );
-        let left = dropped.lock().unwrap_or_else(PoisonError::into_inner);
+        let left = dropped.locked();
         assert!(
             left.files.is_empty(),
             "taken from the drop user's directory alone"
