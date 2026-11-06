@@ -10,8 +10,9 @@
 //! version 3 says, and a rename keeps the file's modification time.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use xcore::lock::Locked;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
@@ -97,7 +98,7 @@ pub fn serve(channel: &mut Channel<'_>, directory: &Mutex<Directory>) -> Result<
             .split_first()
             .ok_or_else(|| protocol_error("an SFTP packet with no type"))?;
         let reply = {
-            let mut held = directory.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut held = directory.locked();
             answer(*kind, rest, &mut held, &mut handles, &mut next)?
         };
         channel.write(&reply)?;
@@ -458,10 +459,7 @@ mod tests {
         let heard = Arc::new(Mutex::new(Vec::new()));
         let telling = Arc::clone(&heard);
         let told: Told = Arc::new(move |name: &str| {
-            telling
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(name.to_string());
+            telling.locked().push(name.to_string());
         });
         let mut files = Directory::default().telling(told);
         let mut handles = BTreeMap::new();
