@@ -22,7 +22,7 @@
 //! real handshake — Curve25519 key exchange, an Ed25519 host key, `aes256-ctr`
 //! with `hmac-sha2-256` — not a stub; what it is not is a general server.
 //! It links no authenticator — identity presentation is not a transport's
-//! (`architecture.xmip`) — and admits a login only where the check it is
+//! (`architecture.toml`) — and admits a login only where the check it is
 //! handed (`net::login::Check`) admits it: a password, or a key whose
 //! signature verified, for the user it names. The loopback's checks the one
 //! login its own near end presents (`Credential::admitted_as`), the
