@@ -27,7 +27,8 @@ path = "src/lib.rs"
 # the carrier the manifest declares: the far end binds through it.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # The settings this technology declares (xcore::settings), read through
-# transport::Configured (ADR-0064, amendment 2026-09-26).
+# transport::Configured (ADR-0064, amendment 2026-09-26), and the one clock
+# (xcore::Clock) a write's time is read from.
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilsson/xmip-core-transport-tcp", branch = "main" }
 # The names the peer's key, user, signature and session travel under, which
