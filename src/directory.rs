@@ -11,8 +11,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use xcore::lock::Locked;
+use xcore::{Clock, SystemClock};
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
@@ -69,11 +69,7 @@ impl Directory {
     /// version 3 carries a time, and always after the write before it, so a
     /// file written again lists as changed even within one second.
     fn touch(&mut self, name: &str) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| {
-                u32::try_from(since.as_secs()).unwrap_or(u32::MAX)
-            });
+        let now = u32::try_from(SystemClock.unix_seconds().max(0)).unwrap_or(u32::MAX);
         self.newest = now.max(self.newest.saturating_add(1));
         self.written.insert(name.to_string(), self.newest);
     }
