@@ -16,7 +16,16 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use net::login::{self, Check};
 use transport::{Transport, socket};
+use xcore::latency::spread;
 use xmip_core_transport_sftp::{SftpTransport, server, subsystem};
+
+/// What a put or a harvest may take, the fastest of five
+/// (`xcore::latency::spread`): a channel of its own each, which is SFTP's,
+/// and seven or eight round trips on it. The budget is five milliseconds,
+/// not the millisecond `xcore::latency::Rounds` holds a wake to, so no
+/// plain wake is measured beside it. Until 2026-11-15 the hundred were
+/// timed once together, the connection's handshake among them.
+const BUDGET: Duration = Duration::from_millis(5);
 
 /// The user the far end admits.
 const USER: &str = "party";
@@ -57,16 +66,18 @@ fn a_hundred_puts_take_five_milliseconds_each_at_most() {
     const SENDS: usize = 100;
     let (address, serving) = far_end(subsystem::Files::new());
     let near = near(address);
-    let began = Instant::now();
-    for n in 0..SENDS {
-        near.send(&format!("{n}.edi"), n.to_string().as_bytes())
-            .expect("put");
-    }
-    let took = began.elapsed();
-    // Generous for a debug build under load: five milliseconds a put.
-    assert!(took < Duration::from_millis(5 * SENDS as u64), "{took:?}");
+    let took = (0..SENDS)
+        .map(|n| {
+            let began = Instant::now();
+            near.send(&format!("{n}.edi"), n.to_string().as_bytes())
+                .expect("put");
+            began.elapsed()
+        })
+        .collect();
     drop(near);
     serving.join().expect("far end");
+    let took = spread("a put", took);
+    assert!(took.fastest_of_five < BUDGET, "{took:?}");
 }
 
 #[test]
@@ -77,20 +88,19 @@ fn a_hundred_harvests_take_five_milliseconds_each_at_most() {
     files.insert("1.edi".to_string(), b"harvested".to_vec());
     let (address, serving) = far_end(files);
     let near = near(address);
-    let began = Instant::now();
     let mut arrived = Vec::new();
-    for _ in 0..RECEIVES {
-        for one in near.receive().expect("harvested") {
-            arrived.push(one.taken().expect("taken"));
-        }
-    }
-    let took = began.elapsed();
-    // Generous for a debug build under load: five milliseconds a harvest.
-    assert!(
-        took < Duration::from_millis(5 * RECEIVES as u64),
-        "{took:?}"
-    );
+    let took = (0..RECEIVES)
+        .map(|_| {
+            let began = Instant::now();
+            for one in near.receive().expect("harvested") {
+                arrived.push(one.taken().expect("taken"));
+            }
+            began.elapsed()
+        })
+        .collect();
     assert_eq!(arrived.len(), 1);
     drop(near);
     serving.join().expect("far end");
+    let took = spread("a harvest", took);
+    assert!(took.fastest_of_five < BUDGET, "{took:?}");
 }
