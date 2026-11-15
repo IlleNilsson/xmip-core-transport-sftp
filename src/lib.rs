@@ -82,7 +82,7 @@ use transport::{
     Arrived, Configured, Directions, NodeLocation, Pinned, Pool, ResourceClaim, Secured, Transport,
 };
 use xcore::SecretKind;
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+use xcore::settings::{Applies, Read, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
 pub struct SftpTransport {
@@ -161,13 +161,6 @@ impl SftpTransport {
         self
     }
 
-    /// Give up on a peer that stops mid-exchange.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// Both ends on this machine: an ephemeral local port, the loopback
     /// timeout, and the user `xmip` with a fixed key, so every arrival
     /// carries the same fingerprint.
@@ -236,14 +229,12 @@ impl Configured for SftpTransport {
     /// it names, no one where it names none.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
-        settings: &[Setting {
-            name: "timeout",
-            kind: Kind::Duration,
-            presence: Presence::Optional,
-            meaning: "How long a peer that stops mid-exchange is waited on; unbounded when \
-                          left out.",
-            applies: Applies::Both,
-        }],
+        settings: &[transport::configured::timeout(
+            Applies::Both,
+            None,
+            "How long a peer that stops mid-exchange is waited on; unbounded when \
+             left out.",
+        )],
     };
 
     const SCHEMES: &'static [&'static str] = &["sftp"];
@@ -253,15 +244,16 @@ impl Configured for SftpTransport {
         address
     }
 
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
+
     /// The user comes from the address; the password or the key is the
     /// secret the Location names, never a setting.
-    fn configured(address: &str, settings: &Read) -> Result<Self> {
+    fn configured(address: &str, _settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address);
         if let Some(user) = Target::under(Self::SCHEMES, address).and_then(|named| named.user()) {
             transport = transport.as_user(user);
-        }
-        if let Some(timeout) = settings.optional_duration("timeout") {
-            transport = transport.timing_out_after(timeout);
         }
         Ok(transport)
     }

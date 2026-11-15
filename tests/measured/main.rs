@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use net::login::{self, Check};
+use transport::Configured;
 use transport::{Transport, socket};
 use xcore::latency::spread;
 use xmip_core_transport_sftp::{SftpTransport, server, subsystem};
