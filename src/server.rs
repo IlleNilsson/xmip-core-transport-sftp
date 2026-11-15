@@ -172,6 +172,7 @@ mod tests {
     use crate::client::{Client, Credential};
     use std::net::TcpListener;
     use std::time::Duration;
+    use transport::Configured;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
