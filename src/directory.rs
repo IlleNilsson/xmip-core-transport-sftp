@@ -276,11 +276,7 @@ fn on_read(
             "a read from a handle not open for reading",
         ));
     };
-    let file = directory
-        .files
-        .get(name)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+    let file = directory.files.get(name).map_or_default(Vec::as_slice);
     if offset >= file.len() {
         return Ok(status(id, EOF, "end of file"));
     }
