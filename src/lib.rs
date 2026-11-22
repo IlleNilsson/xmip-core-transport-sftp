@@ -79,7 +79,7 @@ use transport::error::{Result, TransportError};
 use transport::file_name::file_name;
 use transport::loopback::LOOPBACK_TIMEOUT;
 use transport::{
-    Arrived, Configured, Directions, NodeLocation, Pinned, Pool, ResourceClaim, Secured, Transport,
+    Arrived, Configured, Directions, NodeStart, Pinned, Pool, ResourceClaim, Secured, Transport,
 };
 use xcore::SecretKind;
 use xcore::settings::{Applies, Read, Settings};
@@ -258,10 +258,12 @@ impl Configured for SftpTransport {
         Ok(transport)
     }
 
-    /// Claims made in `node`'s name from here on; what that name still
-    /// holds on the server is returned by the first receive that reaches
-    /// it (ADR-0024, amendment 2026-10-13).
-    fn on_node(mut self, node: &NodeLocation) -> Result<Self> {
+    /// Claims made in the name of `node`, its node and that start of it,
+    /// from here on; what the node's earlier starts still hold on the
+    /// server is returned by the first receive that reaches it, and what
+    /// this start holds through another Location is left (ADR-0024,
+    /// amendments 2026-10-13 and 2026-11-22).
+    fn on_node(mut self, node: &NodeStart) -> Result<Self> {
         self.claiming = Claiming::recovering(Claimant::of(node));
         Ok(self)
     }

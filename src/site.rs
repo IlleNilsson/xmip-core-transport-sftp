@@ -218,7 +218,7 @@ mod tests {
 
     use ed25519_dalek::SigningKey;
     use transport::concurrent::Concurrent;
-    use transport::{Configured, NodeLocation, Transport};
+    use transport::{Configured, NodeLocation, NodeStart, Transport};
 
     use crate::SftpTransport;
     use crate::directory::{Directory, Shared};
@@ -241,11 +241,13 @@ mod tests {
         held.files.keys().cloned().collect()
     }
 
+    /// A Receive Location on a start of the node at `place`, after every
+    /// start before it.
     fn receiver(address: &str, place: usize) -> SftpTransport {
         let node = NodeLocation::new(format!("process-{}/place-{place}", std::process::id()));
         crate::fixture::near(address)
             .timing_out_after(Duration::from_secs(10))
-            .on_node(&node)
+            .on_node(&NodeStart::next(node))
             .expect("built on its node")
     }
 
