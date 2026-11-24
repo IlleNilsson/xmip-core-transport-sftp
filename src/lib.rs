@@ -26,7 +26,7 @@
 //! handed (`net::login::Check`) admits it: a password, or a key whose
 //! signature verified, for the user it names. The loopback's checks the one
 //! login its own near end presents (`Credential::admitted_as`), the
-//! Essentials' asks `authenticate/password` and `authenticate/ssh-key`.
+//! System Tests' asks `authenticate/password` and `authenticate/ssh-key`.
 //!
 //! Where the client authenticated by a public key, the far end promotes the
 //! peer onto the arrival for the identity gate that follows: the origin URI
