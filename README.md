@@ -35,7 +35,7 @@ A Receive Location harvests on the same kept connection, a channel per harvest. 
 
 A file keeps its name both ways (ADR-0024, amendment 2026-10-20): an arrival carries the name it was dropped under as `file.name`, which the Message Context keeps, and a send names its file as the file family does — the name the Message was received under, else its identifier, or the target's own name where a test or a tool sends bytes it holds — the one naming in the transport capability (`transport::file_name`). Until 2026-10-22 a send named its file by its target's last segment, so a Send Location whose address named the server alone wrote every file under one empty name.
 
-The far end serves one directory to everyone (`serving`) or one to each user (`serving_each`) — by a name the check admitted with its password or its key — and tells its owner of every file a client finished writing as it closes it (`Directory::telling`): the Parties' far end the Systems Tests serve the nodes on machines of their own, each Location a user of its own there (ADR-0028, amendment 2026-10-22). The client still lists and names files in the directory its login lands in; a path in its address is not yet followed.
+The far end serves one directory to everyone (`serving`) or one to each user (`serving_each`) — by a name the check admitted with its password or its key — and tells its owner of every file a client finished writing as it closes it (`Directory::telling`): the System Tests' receiving far ends, each on a virtual machine of its own, each Send Port a user of its own there (ADR-0028, amendments 2026-11-22 and 2026-11-25). The client still lists and names files in the directory its login lands in; a path in its address is not yet followed.
 
 ## The claim
 

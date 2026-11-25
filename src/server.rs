@@ -145,8 +145,8 @@ pub fn serving(
 /// `of` gives the user it authenticated as, signing as `host`, each read
 /// given up after `timeout`: one server whose every account has a directory
 /// of its own, as a trading Party's server gives each Party one — the
-/// Parties' far end the Systems Tests serve the nodes on machines of their
-/// own (ADR-0028, amendment 2026-10-22). A password or a key is admitted
+/// System Tests' receiving far ends, each Send Port a user of its own
+/// (ADR-0028, amendments 2026-11-22 and 2026-11-25). A password or a key is admitted
 /// where `check` admits it for the user it names, so no directory is
 /// chosen by a name nothing checked.
 /// Dropped, it stops accepting.
