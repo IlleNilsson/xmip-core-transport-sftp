@@ -52,39 +52,70 @@
 //! node keeps its pins under its data directory, so a restart holds a
 //! server to the key it presented before; until 2026-10-28 the host key
 //! was taken as presented.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "default")]
 pub mod connection;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod directory;
 #[cfg(test)]
 mod fixture;
+#[cfg(feature = "default")]
 mod loopback;
+#[cfg(feature = "default")]
 pub mod server;
+#[cfg(feature = "default")]
 pub mod site;
+#[cfg(feature = "default")]
 pub mod subsystem;
 
+#[cfg(feature = "default")]
 use std::sync::Arc;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 use ed25519_dalek::SigningKey;
 
+#[cfg(feature = "default")]
 pub use client::{Client, Credential};
+#[cfg(feature = "default")]
 pub use connection::Connection;
+#[cfg(feature = "default")]
 use net::Target;
+#[cfg(feature = "default")]
 pub use server::{Served, serving, serving_each};
+#[cfg(feature = "default")]
 pub use site::SftpSite;
+#[cfg(feature = "default")]
 pub use subsystem::Stamp;
+#[cfg(feature = "default")]
 use transport::claim::{Claimant, Claiming, Held, Site, Sited};
+#[cfg(feature = "default")]
 use transport::error::{Result, TransportError};
+#[cfg(feature = "default")]
 use transport::file_name::file_name;
+#[cfg(feature = "default")]
 use transport::loopback::LOOPBACK_TIMEOUT;
+#[cfg(feature = "default")]
 use transport::{
     Arrived, Configured, Directions, NodeStart, Pinned, Pool, ResourceClaim, Secured, Transport,
 };
+#[cfg(feature = "default")]
 use xcore::SecretKind;
-use xcore::settings::{Applies, Read, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// Speak SFTP as a client, and stand up an in-process far end.
+#[cfg(feature = "default")]
 pub struct SftpTransport {
     endpoint: String,
     /// Who it logs in as: the address's user, no one where it names none.
@@ -110,6 +141,7 @@ pub struct SftpTransport {
     claiming: Claiming<Stamp>,
 }
 
+#[cfg(feature = "default")]
 impl SftpTransport {
     /// The fixed key the loopback authenticates with, so its arrivals carry a
     /// stable fingerprint without drawing randomness at construction.
@@ -222,22 +254,10 @@ impl SftpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for SftpTransport {
-    /// The address is the user, server and directory,
-    /// `sftp://user@host:22/dir`, or `host:22` alone: where a Receive
-    /// Location takes files from and a Send Location puts them, as the user
-    /// it names, no one where it names none.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[transport::configured::timeout(
-            Applies::Both,
-            None,
-            "How long a peer that stops mid-exchange is waited on; unbounded when \
-             left out.",
-        )],
-    };
-
-    const SCHEMES: &'static [&'static str] = &["sftp"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     /// The whole address: its user part is the user it logs in as.
     fn own_terms(address: &str) -> &str {
@@ -284,10 +304,12 @@ impl Configured for SftpTransport {
 }
 
 /// The last `/`-separated segment of `path`, the file's own name.
+#[cfg(feature = "default")]
 fn last_segment(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+#[cfg(feature = "default")]
 impl Transport for SftpTransport {
     fn name(&self) -> &'static str {
         "sftp"
@@ -352,6 +374,7 @@ impl Transport for SftpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Sited for SftpTransport {
     type Stamp = Stamp;
 
@@ -378,6 +401,7 @@ mod tests {
     use transport::loopback::Loopback;
     use transport::socket;
     use xcore::lock::Locked;
+    use xcore::settings::Applies;
 
     /// What two listings take: a file is taken by the listing after the
     /// one that found it unchanged.
